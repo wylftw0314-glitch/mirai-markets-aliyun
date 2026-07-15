@@ -212,6 +212,7 @@ async function handleRequest(request){
   }
   if(url.pathname==="/api/quote"){
     const symbol=url.searchParams.get("symbol")||"";
+    if(url.searchParams.get("mode")==="detail")return getIntradayDetail(symbol);
     const info=quoteInfo[symbol];
     if(info&&info[2]==="KR")return getNaverQuote(symbol);
     return getYahooQuote(symbol);
