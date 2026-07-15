@@ -53,6 +53,30 @@ async function getYahooQuote(symbol){
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Yahoo Chart",subrequests:1},200);
 }
 
+function naverNumber(value){
+  return Number(String(value==null?"0":value).replace(/,/g,"").replace(/%/g,""));
+}
+
+async function getNaverQuote(symbol){
+  const metaInfo=quoteInfo[symbol];
+  if(!metaInfo)return jsonResponse({error:"Unsupported symbol"},400);
+  const isIndex=symbol==="^KS11"||symbol==="^KQ11";
+  const code=isIndex?(symbol==="^KS11"?"KOSPI":"KOSDAQ"):symbol.replace(".KS","");
+  const url=isIndex?"https://polling.finance.naver.com/api/realtime/domestic/index/"+code:"https://m.stock.naver.com/api/stock/"+code+"/basic";
+  const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  if(!response.ok)return jsonResponse({error:"Naver HTTP "+response.status,symbol:symbol},502);
+  const json=await response.json();
+  const data=isIndex?(json.datas&&json.datas[0]?json.datas[0]:null):json;
+  if(!data||data.closePrice==null)return jsonResponse({error:"Naver empty response",symbol:symbol},502);
+  const direction=data.compareToPreviousPrice&&String(data.compareToPreviousPrice.code)==="5"?-1:1;
+  const price=naverNumber(data.closePrice);
+  const change=Math.abs(naverNumber(data.compareToPreviousClosePrice))*direction;
+  const percent=Math.abs(naverNumber(data.fluctuationsRatio))*direction;
+  const id=metaInfo[0],name=metaInfo[1],marketName=metaInfo[2],kind=metaInfo[3];
+  const item={id:id,name:name,localName:data.stockName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:percent,currency:"KRW",points:[price-change,price],source:"Naver Finance"};
+  return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Naver Finance",subrequests:1},200);
+}
+
 async function getNaverKorea(){
   const codes=Object.keys(koreaInfo).filter(function(code){return /^\d/.test(code)});
   const services=codes.map(function(code){return "SERVICE_ITEM:"+code});
@@ -113,7 +137,12 @@ async function market(){
 async function handleRequest(request){
   const url=new URL(request.url);
   if(url.pathname==="/api/health")return jsonResponse({ok:true,runtime:"es6-compatible",time:new Date().toISOString()},200);
-  if(url.pathname==="/api/quote")return getYahooQuote(url.searchParams.get("symbol")||"");
+  if(url.pathname==="/api/quote"){
+    const symbol=url.searchParams.get("symbol")||"";
+    const info=quoteInfo[symbol];
+    if(info&&info[2]==="KR")return getNaverQuote(symbol);
+    return getYahooQuote(symbol);
+  }
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
