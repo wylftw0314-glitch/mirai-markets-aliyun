@@ -1,9 +1,85 @@
-const symbols=["^N225","^TOPX","^KS11","^KQ11","6758.T","8035.T","6857.T","6861.T","9984.T","6723.T","6146.T","7974.T","005930.KS","000660.KS","035420.KS","035720.KS","066570.KS","009150.KS","042700.KS","373220.KS"];
-const info={"^N225":["nikkei","日经 225","JP","index"],"^TOPX":["topix","TOPIX","JP","index"],"^KS11":["kospi","KOSPI","KR","index"],"^KQ11":["kosdaq","KOSDAQ","KR","index"],"6758.T":["sony","索尼集团","JP","stock"],"8035.T":["tel","东京电子","JP","stock"],"6857.T":["advantest","爱德万测试","JP","stock"],"6861.T":["keyence","基恩士","JP","stock"],"9984.T":["softbank","软银集团","JP","stock"],"6723.T":["renesas","瑞萨电子","JP","stock"],"6146.T":["disco","迪思科","JP","stock"],"7974.T":["nintendo","任天堂","JP","stock"],"005930.KS":["samsung","三星电子","KR","stock"],"000660.KS":["skhynix","SK 海力士","KR","stock"],"035420.KS":["naver","NAVER","KR","stock"],"035720.KS":["kakao","Kakao","KR","stock"],"066570.KS":["lge","LG电子","KR","stock"],"009150.KS":["semco","三星电机","KR","stock"],"042700.KS":["hanmi","韩美半导体","KR","stock"],"373220.KS":["lges","LG新能源","KR","stock"]};
-async function market(){const settled=await Promise.allSettled(symbols.map(async symbol=>{const r=await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=5m`,{headers:{"User-Agent":"Mozilla/5.0"}});if(!r.ok)throw Error();const j=await r.json(),c=j.chart.result?.[0],m=c?.meta,pts=(c?.indicators?.quote?.[0]?.close||[]).filter(n=>typeof n==='number');if(!m||!pts.length)throw Error();const[id,name,market,kind]=info[symbol],prev=m.chartPreviousClose||m.previousClose||pts[0],price=m.regularMarketPrice||pts.at(-1),change=price-prev;return{id,name,localName:m.longName||m.shortName||name,symbol,market,kind,price,change,changePercent:change/prev*100,currency:m.currency||(market==='JP'?'JPY':'KRW'),points:pts.filter((_,i)=>i%Math.max(1,Math.floor(pts.length/24))===0).slice(-24)}}));return new Response(JSON.stringify({items:settled.filter(x=>x.status==='fulfilled').map(x=>x.value),updatedAt:new Date().toISOString()}),{headers:{'content-type':'application/json;charset=UTF-8','cache-control':'public,max-age=60'}})}
+const japanSymbols=["^N225","^TOPX","6758.T","8035.T","6857.T","6861.T","9984.T","6723.T","6146.T","7974.T"];
+const japanInfo={
+  "^N225":["nikkei","日经 225","index"],"^TOPX":["topix","TOPIX","index"],
+  "6758.T":["sony","索尼集团","stock"],"8035.T":["tel","东京电子","stock"],
+  "6857.T":["advantest","爱德万测试","stock"],"6861.T":["keyence","基恩士","stock"],
+  "9984.T":["softbank","软银集团","stock"],"6723.T":["renesas","瑞萨电子","stock"],
+  "6146.T":["disco","迪思科","stock"],"7974.T":["nintendo","任天堂","stock"]
+};
+const koreaInfo={
+  KOSPI:["kospi","KOSPI","index"],KOSDAQ:["kosdaq","KOSDAQ","index"],
+  "005930":["samsung","三星电子","stock"],"000660":["skhynix","SK 海力士","stock"],
+  "035420":["naver","NAVER","stock"],"035720":["kakao","Kakao","stock"],
+  "066570":["lge","LG电子","stock"],"009150":["semco","三星电机","stock"],
+  "042700":["hanmi","韩美半导体","stock"],"373220":["lges","LG新能源","stock"]
+};
+
+async function fetchWithTimeout(url,options={},timeout=8000){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeout);
+  try{return await fetch(url,{...options,signal:controller.signal})}finally{clearTimeout(timer)}
+}
+
+async function getNaverKorea(){
+  const stocks=Object.keys(koreaInfo).filter(code=>/^\d/.test(code)).map(code=>`SERVICE_ITEM:${code}`);
+  const query=[...stocks,"SERVICE_INDEX:KOSPI","SERVICE_INDEX:KOSDAQ"].join("|");
+  const response=await fetchWithTimeout(`https://polling.finance.naver.com/api/realtime?query=${encodeURIComponent(query)}`,{
+    headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/","Accept":"application/json"}
+  });
+  if(!response.ok)throw new Error(`Naver ${response.status}`);
+  const json=await response.json();
+  const rows=(json.result?.areas||[]).flatMap(area=>area.datas||[]);
+  return rows.map(row=>{
+    const code=String(row.cd||"");
+    const meta=koreaInfo[code];
+    if(!meta)return null;
+    const [id,name,kind]=meta;
+    const scale=kind==="index"?100:1;
+    const price=Number(row.nv)/scale;
+    const change=Math.abs(Number(row.cv||0))/scale*(String(row.rf)==="5"?-1:1);
+    const percent=Math.abs(Number(row.cr||0))*(String(row.rf)==="5"?-1:1);
+    const previous=price-change;
+    return {id,name,localName:name,symbol:kind==="stock"?`${code}.KS`:code,market:"KR",kind,price,change,changePercent:percent,currency:"KRW",points:[previous,price],source:"Naver Finance"};
+  }).filter(item=>item&&Number.isFinite(item.price));
+}
+
+async function getYahooJapan(symbol){
+  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=5m`;
+  const response=await fetchWithTimeout(url,{headers:{"User-Agent":"Mozilla/5.0"}});
+  if(!response.ok)throw new Error(`Yahoo ${response.status}`);
+  const json=await response.json();
+  const chart=json.chart.result?.[0],meta=chart?.meta;
+  const points=(chart?.indicators?.quote?.[0]?.close||[]).filter(Number.isFinite);
+  if(!meta||!points.length)throw new Error("No Japan quote");
+  const [id,name,kind]=japanInfo[symbol];
+  const previous=Number(meta.chartPreviousClose||meta.previousClose||points[0]);
+  const price=Number(meta.regularMarketPrice||points.at(-1));
+  const change=price-previous;
+  const step=Math.max(1,Math.floor(points.length/24));
+  return {id,name,localName:meta.longName||meta.shortName||name,symbol,market:"JP",kind,price,change,changePercent:previous?change/previous*100:0,currency:meta.currency||"JPY",points:points.filter((_,i)=>i%step===0).slice(-24),source:"Yahoo Finance"};
+}
+
+async function market(){
+  const [korea,japan]=await Promise.allSettled([
+    getNaverKorea(),
+    Promise.allSettled(japanSymbols.map(getYahooJapan))
+  ]);
+  const items=[];
+  const sources=[];
+  if(korea.status==="fulfilled"){items.push(...korea.value);sources.push("Naver Finance")}
+  if(japan.status==="fulfilled"){
+    const japanItems=japan.value.filter(result=>result.status==="fulfilled").map(result=>result.value);
+    if(japanItems.length){items.push(...japanItems);sources.push("Yahoo Finance")}
+  }
+  return new Response(JSON.stringify({items,updatedAt:new Date().toISOString(),sources}),{
+    status:items.length?200:502,
+    headers:{"content-type":"application/json;charset=UTF-8","cache-control":"public,max-age=30","access-control-allow-origin":"*"}
+  });
+}
+
 async function handleRequest(request){
   const url=new URL(request.url);
-  if(url.pathname==='/api/market')return market();
-  return new Response('Not Found',{status:404,headers:{'content-type':'text/plain;charset=UTF-8'}});
+  if(url.pathname==="/api/market")return market();
+  return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
-addEventListener('fetch',event=>event.respondWith(handleRequest(event.request)));
+addEventListener("fetch",event=>event.respondWith(handleRequest(event.request)));
