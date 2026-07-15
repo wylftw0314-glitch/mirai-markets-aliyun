@@ -36,6 +36,7 @@ async function getYahooQuote(symbol){
   if(!metaInfo)return jsonResponse({error:"Unsupported symbol"},400);
   const url="https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=1d&interval=5m";
   const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+  if(!response.ok&&metaInfo[2]==="JP"&&metaInfo[3]==="stock")return getNaverWorldQuote(symbol,"Yahoo HTTP "+response.status);
   if(!response.ok)return jsonResponse({error:"Yahoo HTTP "+response.status,symbol:symbol},502);
   const json=await response.json();
   const result=json.chart&&json.chart.result&&json.chart.result[0]?json.chart.result[0]:null;
@@ -51,6 +52,18 @@ async function getYahooQuote(symbol){
   const id=metaInfo[0],name=metaInfo[1],marketName=metaInfo[2],kind=metaInfo[3];
   const item={id:id,name:name,localName:meta.longName||meta.shortName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:previous?change/previous*100:0,currency:meta.currency||(marketName==="JP"?"JPY":"KRW"),points:chartPoints.length?chartPoints:[previous,price],source:"Yahoo Chart"};
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Yahoo Chart",subrequests:1},200);
+}
+
+async function getNaverWorldQuote(symbol,previousError){
+  const metaInfo=quoteInfo[symbol];
+  const response=await fetch("https://api.stock.naver.com/stock/"+encodeURIComponent(symbol)+"/basic",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  if(!response.ok)return jsonResponse({error:previousError+" / Naver Japan HTTP "+response.status,symbol:symbol},502);
+  const data=await response.json();
+  if(data.closePrice==null)return jsonResponse({error:previousError+" / Naver Japan empty",symbol:symbol},502);
+  const direction=data.compareToPreviousPrice&&String(data.compareToPreviousPrice.code)==="5"?-1:1;
+  const price=naverNumber(data.closePrice),change=Math.abs(naverNumber(data.compareToPreviousClosePrice))*direction;
+  const item={id:metaInfo[0],name:metaInfo[1],localName:data.stockName||metaInfo[1],symbol:symbol,market:"JP",kind:metaInfo[3],price:price,change:change,changePercent:Math.abs(naverNumber(data.fluctuationsRatio))*direction,currency:data.currencyType&&data.currencyType.code?data.currencyType.code:"JPY",points:[price-change,price],source:"Naver World Stock"};
+  return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Naver World Stock",subrequests:2},200);
 }
 
 function naverNumber(value){
@@ -75,6 +88,31 @@ async function getNaverQuote(symbol){
   const id=metaInfo[0],name=metaInfo[1],marketName=metaInfo[2],kind=metaInfo[3];
   const item={id:id,name:name,localName:data.stockName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:percent,currency:"KRW",points:[price-change,price],source:"Naver Finance"};
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Naver Finance",subrequests:1},200);
+}
+
+async function getIntradayDetail(symbol){
+  const info=quoteInfo[symbol];
+  if(!info)return jsonResponse({error:"Unsupported symbol"},400);
+  if(info[2]==="KR"&&info[3]==="stock"){
+    const code=symbol.replace(".KS","");
+    const response=await fetch("https://fchart.stock.naver.com/sise.nhn?symbol="+code+"&timeframe=minute&count=500&requestType=0",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/"}});
+    if(!response.ok)return jsonResponse({error:"Naver chart HTTP "+response.status},502);
+    const xml=await response.text();
+    const labels=[],points=[];
+    const pattern=/<item data="([^"]+)"/g;
+    let match;
+    while((match=pattern.exec(xml))!==null){const fields=match[1].split("|");const close=Number(fields[4]);if(Number.isFinite(close)){labels.push(fields[0]);points.push(close)}}
+    if(points.length)return jsonResponse({symbol:symbol,labels:labels,points:points,source:"Naver intraday",completeDay:true},200);
+  }
+  if(info[2]==="JP"&&info[3]==="stock"){
+    const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(symbol)+"?periodType=minute&count=500",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+    if(response.ok){
+      const json=await response.json();const rows=Array.isArray(json)?json:(json.result||json.priceInfos||[]);const labels=[],points=[];
+      rows.forEach(function(row){const close=naverNumber(row.closePrice||row.close);if(Number.isFinite(close)&&close>0){labels.push(row.localTradedAt||row.date||"");points.push(close)}});
+      if(points.length)return jsonResponse({symbol:symbol,labels:labels,points:points,source:"Naver World intraday",completeDay:true},200);
+    }
+  }
+  return jsonResponse({error:"该数据源暂未提供完整日内走势",symbol:symbol},502);
 }
 
 async function getNaverKorea(){
@@ -143,6 +181,7 @@ async function handleRequest(request){
     if(info&&info[2]==="KR")return getNaverQuote(symbol);
     return getYahooQuote(symbol);
   }
+  if(url.pathname==="/api/detail")return getIntradayDetail(url.searchParams.get("symbol")||"");
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
