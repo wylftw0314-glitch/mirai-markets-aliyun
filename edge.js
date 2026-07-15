@@ -14,73 +14,71 @@ const koreaInfo={
   "042700":["hanmi","韩美半导体","stock"],"373220":["lges","LG新能源","stock"]
 };
 
-async function fetchWithTimeout(url,options={}){
-  return fetch(url,options);
+function jsonResponse(data,status){
+  return new Response(JSON.stringify(data),{status:status,headers:{"content-type":"application/json;charset=UTF-8","cache-control":"public,max-age=30","access-control-allow-origin":"*"}});
 }
 
 async function getNaverKorea(){
-  const stocks=Object.keys(koreaInfo).filter(code=>/^\d/.test(code)).map(code=>`SERVICE_ITEM:${code}`);
-  const query=[...stocks,"SERVICE_INDEX:KOSPI","SERVICE_INDEX:KOSDAQ"].join("|");
-  const response=await fetchWithTimeout(`https://polling.finance.naver.com/api/realtime?query=${encodeURIComponent(query)}`,{
-    headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/","Accept":"application/json"}
-  });
-  if(!response.ok)throw new Error(`Naver ${response.status}`);
+  const codes=Object.keys(koreaInfo).filter(function(code){return /^\d/.test(code)});
+  const services=codes.map(function(code){return "SERVICE_ITEM:"+code});
+  services.push("SERVICE_INDEX:KOSPI","SERVICE_INDEX:KOSDAQ");
+  const url="https://polling.finance.naver.com/api/realtime?query="+encodeURIComponent(services.join("|"));
+  const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/","Accept":"application/json"}});
+  if(!response.ok)throw new Error("HTTP "+response.status);
   const json=await response.json();
-  const rows=(json.result?.areas||[]).flatMap(area=>area.datas||[]);
-  return rows.map(row=>{
+  const areas=json.result&&json.result.areas?json.result.areas:[];
+  let rows=[];
+  areas.forEach(function(area){rows=rows.concat(area.datas||[])});
+  return rows.map(function(row){
     const code=String(row.cd||"");
     const meta=koreaInfo[code];
     if(!meta)return null;
-    const [id,name,kind]=meta;
+    const id=meta[0],name=meta[1],kind=meta[2];
     const scale=kind==="index"?100:1;
+    const direction=String(row.rf)==="5"?-1:1;
     const price=Number(row.nv)/scale;
-    const change=Math.abs(Number(row.cv||0))/scale*(String(row.rf)==="5"?-1:1);
-    const percent=Math.abs(Number(row.cr||0))*(String(row.rf)==="5"?-1:1);
-    const previous=price-change;
-    return {id,name,localName:name,symbol:kind==="stock"?`${code}.KS`:code,market:"KR",kind,price,change,changePercent:percent,currency:"KRW",points:[previous,price],source:"Naver Finance"};
-  }).filter(item=>item&&Number.isFinite(item.price));
+    const change=Math.abs(Number(row.cv||0))/scale*direction;
+    const percent=Math.abs(Number(row.cr||0))*direction;
+    return {id:id,name:name,localName:name,symbol:kind==="stock"?code+".KS":code,market:"KR",kind:kind,price:price,change:change,changePercent:percent,currency:"KRW",points:[price-change,price],source:"Naver Finance"};
+  }).filter(function(item){return item&&Number.isFinite(item.price)});
 }
 
 async function getYahooJapanBatch(){
-  const url=`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(japanSymbols.join(","))}`;
-  const response=await fetchWithTimeout(url,{headers:{"User-Agent":"Mozilla/5.0"}});
-  if(!response.ok)throw new Error(`Yahoo ${response.status}`);
+  const url="https://query1.finance.yahoo.com/v7/finance/quote?symbols="+encodeURIComponent(japanSymbols.join(","));
+  const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+  if(!response.ok)throw new Error("HTTP "+response.status);
   const json=await response.json();
-  const quotes=json.quoteResponse?.result||[];
-  return quotes.map(quote=>{
+  const quotes=json.quoteResponse&&json.quoteResponse.result?json.quoteResponse.result:[];
+  return quotes.map(function(quote){
     const symbol=quote.symbol;
     const meta=japanInfo[symbol];
     if(!meta)return null;
-    const [id,name,kind]=meta;
+    const id=meta[0],name=meta[1],kind=meta[2];
     const price=Number(quote.regularMarketPrice);
     const change=Number(quote.regularMarketChange||0);
     const percent=Number(quote.regularMarketChangePercent||0);
     const previous=Number(quote.regularMarketPreviousClose||price-change);
-    return {id,name,localName:quote.longName||quote.shortName||name,symbol,market:"JP",kind,price,change,changePercent:percent,currency:quote.currency||"JPY",points:[previous,price],source:"Yahoo Finance"};
-  }).filter(item=>item&&Number.isFinite(item.price));
+    return {id:id,name:name,localName:quote.longName||quote.shortName||name,symbol:symbol,market:"JP",kind:kind,price:price,change:change,changePercent:percent,currency:quote.currency||"JPY",points:[previous,price],source:"Yahoo Finance"};
+  }).filter(function(item){return item&&Number.isFinite(item.price)});
 }
 
 async function market(){
-  const [korea,japan]=await Promise.allSettled([
-    getNaverKorea(),
-    getYahooJapanBatch()
+  const results=await Promise.all([
+    getNaverKorea().then(function(items){return {source:"Naver Finance",items:items}}).catch(function(error){return {source:"Naver Finance",items:[],error:error.message||String(error)}}),
+    getYahooJapanBatch().then(function(items){return {source:"Yahoo Finance",items:items}}).catch(function(error){return {source:"Yahoo Finance",items:[],error:error.message||String(error)}})
   ]);
-  const items=[];
-  const sources=[];
-  const errors=[];
-  if(korea.status==="fulfilled"){items.push(...korea.value);sources.push("Naver Finance")}
-  else errors.push(`Naver: ${korea.reason?.message||"failed"}`);
-  if(japan.status==="fulfilled"&&japan.value.length){items.push(...japan.value);sources.push("Yahoo Finance")}
-  else errors.push(`Yahoo: ${japan.reason?.message||"empty"}`);
-  return new Response(JSON.stringify({items,updatedAt:new Date().toISOString(),sources,errors,subrequests:2}),{
-    status:items.length?200:502,
-    headers:{"content-type":"application/json;charset=UTF-8","cache-control":"public,max-age=30","access-control-allow-origin":"*"}
+  let items=[],sources=[],errors=[];
+  results.forEach(function(result){
+    if(result.items.length){items=items.concat(result.items);sources.push(result.source)}
+    if(result.error)errors.push(result.source+": "+result.error);
   });
+  return jsonResponse({items:items,updatedAt:new Date().toISOString(),sources:sources,errors:errors,subrequests:2,runtime:"es6-compatible"},items.length?200:502);
 }
 
 async function handleRequest(request){
   const url=new URL(request.url);
+  if(url.pathname==="/api/health")return jsonResponse({ok:true,runtime:"es6-compatible",time:new Date().toISOString()},200);
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
-addEventListener("fetch",event=>event.respondWith(handleRequest(event.request)));
+addEventListener("fetch",function(event){event.respondWith(handleRequest(event.request))});
