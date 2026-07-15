@@ -81,4 +81,8 @@ async function handleRequest(request){
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
-addEventListener("fetch",function(event){event.respondWith(handleRequest(event.request))});
+export default {
+  fetch:function(request){
+    return handleRequest(request);
+  }
+};
