@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MIRAI MARKETS｜日韩科技股监控</title>
+  <meta name="description" content="聚合日韩核心指数与主要科技股日内走势，支持主题和涨跌颜色自定义。">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body><main>
+  <header><a class="brand" href="#top"><span class="mark">M</span><span>MIRAI <b>MARKETS</b></span></a><div class="header-actions"><div class="status"><i></i> 东京 · 首尔行情监控 <span id="updated">更新 刚刚</span></div><button id="open-settings" class="settings-trigger">显示设置</button></div></header>
+  <section class="hero" id="top"><div><p class="eyebrow">EAST ASIA TECHNOLOGY WATCH</p><h1>看清日韩科技市场<br>今天的每一次脉动。</h1><p class="intro">聚合日本与韩国核心指数、半导体及平台龙头的日内走势。收藏关注标的，让重要行情始终在最前。</p></div><div class="market-pulse"><span>市场情绪</span><strong id="sentiment">等待行情</strong><div><i id="sentiment-bar"></i></div><small id="sentiment-count">正在连接实时数据</small></div></section>
+  <nav class="filters"><button class="active" data-market="ALL">全部市场</button><button data-market="JP">日本 · JP</button><button data-market="KR">韩国 · KR</button><span id="data-state">正在连接实时行情</span></nav>
+  <section class="section"><div class="section-title"><div><p>MARKET INDEX</p><h2>核心指数</h2></div><span>今日 · 日内走势</span></div><div id="indexes" class="index-grid"></div></section>
+  <section class="section"><div class="section-title"><div><p>TECH LEADERS</p><h2>主要科技股</h2></div><span>★ 收藏后自动置顶</span></div><div class="stock-head"><span>公司 / 代码</span><span>当前价</span><span>今日涨跌</span><span>日内走势</span><span>收藏</span></div><div id="stocks" class="stock-list"></div></section>
+  <footer><div><span class="mark">M</span><strong>MIRAI MARKETS</strong></div><p>数据仅供市场观察，不构成任何投资建议。行情可能存在延迟。</p><span>东京 09:00–15:30 · 首尔 09:00–15:30</span></footer>
+</main>
+<div id="settings" class="settings-backdrop" hidden><aside class="settings-panel"><div class="settings-title"><div><p>APPEARANCE</p><h2>自定义显示</h2></div><button id="close-settings" aria-label="关闭">×</button></div><label>页面主题</label><div class="theme-options"><button data-theme="paper"><i class="theme-swatch paper"></i>纸张</button><button data-theme="midnight"><i class="theme-swatch midnight"></i>深夜</button><button data-theme="ocean"><i class="theme-swatch ocean"></i>海岸</button></div><label for="accent">强调色</label><div class="color-control"><input id="accent" type="color"><span id="accent-value"></span></div><label>上涨颜色</label><div class="rise-options"><button data-rise="green"><i class="green-dot"></i>绿色上涨</button><button data-rise="red"><i class="red-dot"></i>红色上涨</button></div><small>设置只保存在当前浏览器，不会影响其他用户。</small></aside></div>
+<script src="/app.js"></script></body></html>

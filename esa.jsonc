@@ -1,0 +1,7 @@
+{
+  "name": "mirai-markets",
+  "entry": "./edge.js",
+  "installCommand": "",
+  "buildCommand": "",
+  "assets": { "directory": "." }
+}
