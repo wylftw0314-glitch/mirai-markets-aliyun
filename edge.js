@@ -43,35 +43,38 @@ async function getNaverKorea(){
   }).filter(item=>item&&Number.isFinite(item.price));
 }
 
-async function getYahooJapan(symbol){
-  const url=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=5m`;
+async function getYahooJapanBatch(){
+  const url=`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(japanSymbols.join(","))}`;
   const response=await fetchWithTimeout(url,{headers:{"User-Agent":"Mozilla/5.0"}});
   if(!response.ok)throw new Error(`Yahoo ${response.status}`);
   const json=await response.json();
-  const chart=json.chart.result?.[0],meta=chart?.meta;
-  const points=(chart?.indicators?.quote?.[0]?.close||[]).filter(Number.isFinite);
-  if(!meta||!points.length)throw new Error("No Japan quote");
-  const [id,name,kind]=japanInfo[symbol];
-  const previous=Number(meta.chartPreviousClose||meta.previousClose||points[0]);
-  const price=Number(meta.regularMarketPrice||points.at(-1));
-  const change=price-previous;
-  const step=Math.max(1,Math.floor(points.length/24));
-  return {id,name,localName:meta.longName||meta.shortName||name,symbol,market:"JP",kind,price,change,changePercent:previous?change/previous*100:0,currency:meta.currency||"JPY",points:points.filter((_,i)=>i%step===0).slice(-24),source:"Yahoo Finance"};
+  const quotes=json.quoteResponse?.result||[];
+  return quotes.map(quote=>{
+    const symbol=quote.symbol;
+    const meta=japanInfo[symbol];
+    if(!meta)return null;
+    const [id,name,kind]=meta;
+    const price=Number(quote.regularMarketPrice);
+    const change=Number(quote.regularMarketChange||0);
+    const percent=Number(quote.regularMarketChangePercent||0);
+    const previous=Number(quote.regularMarketPreviousClose||price-change);
+    return {id,name,localName:quote.longName||quote.shortName||name,symbol,market:"JP",kind,price,change,changePercent:percent,currency:quote.currency||"JPY",points:[previous,price],source:"Yahoo Finance"};
+  }).filter(item=>item&&Number.isFinite(item.price));
 }
 
 async function market(){
   const [korea,japan]=await Promise.allSettled([
     getNaverKorea(),
-    Promise.allSettled(japanSymbols.map(getYahooJapan))
+    getYahooJapanBatch()
   ]);
   const items=[];
   const sources=[];
+  const errors=[];
   if(korea.status==="fulfilled"){items.push(...korea.value);sources.push("Naver Finance")}
-  if(japan.status==="fulfilled"){
-    const japanItems=japan.value.filter(result=>result.status==="fulfilled").map(result=>result.value);
-    if(japanItems.length){items.push(...japanItems);sources.push("Yahoo Finance")}
-  }
-  return new Response(JSON.stringify({items,updatedAt:new Date().toISOString(),sources}),{
+  else errors.push(`Naver: ${korea.reason?.message||"failed"}`);
+  if(japan.status==="fulfilled"&&japan.value.length){items.push(...japan.value);sources.push("Yahoo Finance")}
+  else errors.push(`Yahoo: ${japan.reason?.message||"empty"}`);
+  return new Response(JSON.stringify({items,updatedAt:new Date().toISOString(),sources,errors,subrequests:2}),{
     status:items.length?200:502,
     headers:{"content-type":"application/json;charset=UTF-8","cache-control":"public,max-age=30","access-control-allow-origin":"*"}
   });
