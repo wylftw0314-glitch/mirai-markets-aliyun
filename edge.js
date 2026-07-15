@@ -99,7 +99,7 @@ async function getIntradayDetail(symbol){
     if(!response.ok)return jsonResponse({error:"Naver chart HTTP "+response.status},502);
     const xml=await response.text();
     const labels=[],points=[];
-    const pattern=/<item data="([^"]+)"/g;
+    const pattern=/<item\s+data=["']([^"']+)["']/g;
     let match;
     while((match=pattern.exec(xml))!==null){const fields=match[1].split("|");const close=Number(fields[4]);if(Number.isFinite(close)){labels.push(fields[0]);points.push(close)}}
     if(points.length)return jsonResponse({symbol:symbol,labels:labels,points:points,source:"Naver intraday",completeDay:true},200);
