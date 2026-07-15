@@ -18,6 +18,41 @@ function jsonResponse(data,status){
   return new Response(JSON.stringify(data),{status:status,headers:{"content-type":"application/json;charset=UTF-8","cache-control":"public,max-age=30","access-control-allow-origin":"*"}});
 }
 
+const quoteInfo={
+  "^N225":["nikkei","日经 225","JP","index"],"^TOPX":["topix","TOPIX","JP","index"],
+  "^KS11":["kospi","KOSPI","KR","index"],"^KQ11":["kosdaq","KOSDAQ","KR","index"],
+  "6758.T":["sony","索尼集团","JP","stock"],"8035.T":["tel","东京电子","JP","stock"],
+  "6857.T":["advantest","爱德万测试","JP","stock"],"6861.T":["keyence","基恩士","JP","stock"],
+  "9984.T":["softbank","软银集团","JP","stock"],"6723.T":["renesas","瑞萨电子","JP","stock"],
+  "6146.T":["disco","迪思科","JP","stock"],"7974.T":["nintendo","任天堂","JP","stock"],
+  "005930.KS":["samsung","三星电子","KR","stock"],"000660.KS":["skhynix","SK 海力士","KR","stock"],
+  "035420.KS":["naver","NAVER","KR","stock"],"035720.KS":["kakao","Kakao","KR","stock"],
+  "066570.KS":["lge","LG电子","KR","stock"],"009150.KS":["semco","三星电机","KR","stock"],
+  "042700.KS":["hanmi","韩美半导体","KR","stock"],"373220.KS":["lges","LG新能源","KR","stock"]
+};
+
+async function getYahooQuote(symbol){
+  const metaInfo=quoteInfo[symbol];
+  if(!metaInfo)return jsonResponse({error:"Unsupported symbol"},400);
+  const url="https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=1d&interval=5m";
+  const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+  if(!response.ok)return jsonResponse({error:"Yahoo HTTP "+response.status,symbol:symbol},502);
+  const json=await response.json();
+  const result=json.chart&&json.chart.result&&json.chart.result[0]?json.chart.result[0]:null;
+  if(!result||!result.meta)return jsonResponse({error:"Yahoo empty response",symbol:symbol},502);
+  const meta=result.meta;
+  const raw=result.indicators&&result.indicators.quote&&result.indicators.quote[0]?result.indicators.quote[0].close:[];
+  const points=(raw||[]).filter(function(value){return typeof value==="number"&&Number.isFinite(value)});
+  const price=Number(meta.regularMarketPrice||points[points.length-1]);
+  const previous=Number(meta.chartPreviousClose||meta.previousClose||points[0]||price);
+  const change=price-previous;
+  const step=Math.max(1,Math.floor(points.length/24));
+  const chartPoints=points.filter(function(value,index){return index%step===0}).slice(-24);
+  const id=metaInfo[0],name=metaInfo[1],marketName=metaInfo[2],kind=metaInfo[3];
+  const item={id:id,name:name,localName:meta.longName||meta.shortName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:previous?change/previous*100:0,currency:meta.currency||(marketName==="JP"?"JPY":"KRW"),points:chartPoints.length?chartPoints:[previous,price],source:"Yahoo Chart"};
+  return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Yahoo Chart",subrequests:1},200);
+}
+
 async function getNaverKorea(){
   const codes=Object.keys(koreaInfo).filter(function(code){return /^\d/.test(code)});
   const services=codes.map(function(code){return "SERVICE_ITEM:"+code});
@@ -78,6 +113,7 @@ async function market(){
 async function handleRequest(request){
   const url=new URL(request.url);
   if(url.pathname==="/api/health")return jsonResponse({ok:true,runtime:"es6-compatible",time:new Date().toISOString()},200);
+  if(url.pathname==="/api/quote")return getYahooQuote(url.searchParams.get("symbol")||"");
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
