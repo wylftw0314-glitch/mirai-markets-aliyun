@@ -14,10 +14,8 @@ const koreaInfo={
   "042700":["hanmi","韩美半导体","stock"],"373220":["lges","LG新能源","stock"]
 };
 
-async function fetchWithTimeout(url,options={},timeout=8000){
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),timeout);
-  try{return await fetch(url,{...options,signal:controller.signal})}finally{clearTimeout(timer)}
+async function fetchWithTimeout(url,options={}){
+  return fetch(url,options);
 }
 
 async function getNaverKorea(){
