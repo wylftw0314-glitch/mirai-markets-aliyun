@@ -31,13 +31,39 @@ const quoteInfo={
   "042700.KS":["hanmi","韩美半导体","KR","stock"],"373220.KS":["lges","LG新能源","KR","stock"]
 };
 
+function inferredInfo(symbol){
+  const fixed=quoteInfo[symbol];
+  if(fixed)return fixed;
+  const clean=String(symbol||"").toUpperCase().trim();
+  if(/^\d{6}\.(KS|KQ)$/.test(clean))return ["custom-"+clean,clean,"KR","stock"];
+  if(/^\d{4}\.T$/.test(clean))return ["custom-"+clean,clean,"JP","stock"];
+  if(/^[A-Z][A-Z0-9.-]{0,11}$/.test(clean))return ["custom-"+clean,clean,"US","stock"];
+  return null;
+}
+
+function marketDate(date,timeZone){
+  const parts=new Intl.DateTimeFormat("en-CA",{timeZone:timeZone,year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(date);
+  const get=type=>(parts.find(part=>part.type===type)||{}).value||"";
+  return get("year")+get("month")+get("day");
+}
+
+function sessionForNewYork(date){
+  const parts=new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(date);
+  const hour=Number((parts.find(part=>part.type==="hour")||{}).value),minute=Number((parts.find(part=>part.type==="minute")||{}).value),total=hour*60+minute;
+  if(total>=240&&total<570)return "pre";
+  if(total>=570&&total<960)return "regular";
+  if(total>=960&&total<1200)return "after";
+  return "closed";
+}
+
 async function getYahooQuote(symbol){
-  const metaInfo=quoteInfo[symbol];
+  const metaInfo=inferredInfo(symbol);
   if(!metaInfo)return jsonResponse({error:"Unsupported symbol"},400);
-  const url="https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=1d&interval=5m";
+  const url="https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=1d&interval=5m&includePrePost=true";
   const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
   if(!response.ok&&metaInfo[2]==="JP"&&metaInfo[3]==="index")return getGoogleJapanIndex(symbol,"Yahoo HTTP "+response.status);
   if(!response.ok&&metaInfo[2]==="JP"&&metaInfo[3]==="stock")return getNaverWorldQuote(symbol,"Yahoo HTTP "+response.status);
+  if(!response.ok&&metaInfo[2]==="US")return getNaverWorldQuote(symbol,"Yahoo HTTP "+response.status);
   if(!response.ok)return jsonResponse({error:"Yahoo HTTP "+response.status,symbol:symbol},502);
   const json=await response.json();
   const result=json.chart&&json.chart.result&&json.chart.result[0]?json.chart.result[0]:null;
@@ -45,13 +71,14 @@ async function getYahooQuote(symbol){
   const meta=result.meta;
   const raw=result.indicators&&result.indicators.quote&&result.indicators.quote[0]?result.indicators.quote[0].close:[];
   const points=(raw||[]).filter(function(value){return typeof value==="number"&&Number.isFinite(value)});
-  const price=Number(meta.regularMarketPrice||points[points.length-1]);
+  const price=Number(metaInfo[2]==="US"&&points.length?points[points.length-1]:meta.regularMarketPrice||points[points.length-1]);
   const previous=Number(meta.chartPreviousClose||meta.previousClose||points[0]||price);
   const change=price-previous;
   const step=Math.max(1,Math.floor(points.length/24));
   const chartPoints=points.filter(function(value,index){return index%step===0}).slice(-24);
   const id=metaInfo[0],name=metaInfo[1],marketName=metaInfo[2],kind=metaInfo[3];
-  const item={id:id,name:name,localName:meta.longName||meta.shortName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:previous?change/previous*100:0,currency:meta.currency||(marketName==="JP"?"JPY":"KRW"),points:chartPoints.length?chartPoints:[previous,price],source:"Yahoo Chart"};
+  const lastTimestamp=result.timestamp&&result.timestamp.length?result.timestamp[result.timestamp.length-1]:null;
+  const item={id:id,name:meta.longName||meta.shortName||name,localName:meta.shortName||meta.longName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:previous?change/previous*100:0,currency:meta.currency||(marketName==="JP"?"JPY":marketName==="US"?"USD":"KRW"),points:chartPoints.length?chartPoints:[previous,price],source:"Yahoo Chart",marketSession:marketName==="US"&&lastTimestamp?sessionForNewYork(new Date(lastTimestamp*1000)):"regular"};
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Yahoo Chart",subrequests:1},200);
 }
 
@@ -74,14 +101,17 @@ function naverFundamental(data,codes){
 }
 
 async function getNaverWorldQuote(symbol,previousError){
-  const metaInfo=quoteInfo[symbol];
-  const response=await fetch("https://api.stock.naver.com/stock/"+encodeURIComponent(symbol)+"/basic",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  const metaInfo=inferredInfo(symbol);
+  let naverSymbol=symbol,response=null;
+  const candidates=metaInfo&&metaInfo[2]==="US"?[symbol+".O",symbol+".N",symbol+".K"]:[symbol];
+  for(let i=0;i<candidates.length;i++){const candidate=candidates[i];const attempt=await fetch("https://api.stock.naver.com/stock/"+encodeURIComponent(candidate)+"/basic",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});if(attempt.ok){naverSymbol=candidate;response=attempt;break}response=attempt}
   if(!response.ok)return jsonResponse({error:previousError+" / Naver Japan HTTP "+response.status,symbol:symbol},502);
   const data=await response.json();
   if(data.closePrice==null)return jsonResponse({error:previousError+" / Naver Japan empty",symbol:symbol},502);
-  const direction=data.compareToPreviousPrice&&String(data.compareToPreviousPrice.code)==="5"?-1:1;
-  const price=naverNumber(data.closePrice),change=Math.abs(naverNumber(data.compareToPreviousClosePrice))*direction;
-  const item={id:metaInfo[0],name:metaInfo[1],localName:data.stockName||metaInfo[1],symbol:symbol,market:"JP",kind:metaInfo[3],price:price,change:change,changePercent:Math.abs(naverNumber(data.fluctuationsRatio))*direction,currency:data.currencyType&&data.currencyType.code?data.currencyType.code:"JPY",points:[price-change,price],source:"Naver World Stock",pe:data.per||naverFundamental(data,["per"]),marketCap:data.marketValue||naverFundamental(data,["marketValue","marketCap"])};
+  const over=metaInfo[2]==="US"&&data.overMarketPriceInfo&&data.overMarketPriceInfo.overMarketStatus==="OPEN"?data.overMarketPriceInfo:null;
+  const direction=(over?over.compareToPreviousPrice:data.compareToPreviousPrice)&&String((over?over.compareToPreviousPrice:data.compareToPreviousPrice).code)==="5"?-1:1;
+  const price=naverNumber(over?over.overPrice:data.closePrice),change=Math.abs(naverNumber(over?over.compareToPreviousClosePrice:data.compareToPreviousClosePrice))*direction;
+  const item={id:metaInfo[0],name:data.stockNameEng||data.stockName||metaInfo[1],localName:data.stockName||data.stockNameEng||metaInfo[1],symbol:symbol,providerSymbol:naverSymbol,market:metaInfo[2],kind:metaInfo[3],price:price,change:change,changePercent:Math.abs(naverNumber(over?over.fluctuationsRatio:data.fluctuationsRatio))*direction,currency:data.currencyType&&data.currencyType.code?data.currencyType.code:(metaInfo[2]==="US"?"USD":"JPY"),points:[price-change,price],source:"Naver World Stock",pe:data.per||naverFundamental(data,["per"]),marketCap:data.marketValue||naverFundamental(data,["marketValue","marketCap"]),marketStatus:over?over.overMarketStatus:data.marketStatus||null,marketSession:over&&String(over.tradingSessionType).includes("PRE")?"pre":over?"after":"regular"};
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Naver World Stock",subrequests:2},200);
 }
 
@@ -90,10 +120,10 @@ function naverNumber(value){
 }
 
 async function getNaverQuote(symbol){
-  const metaInfo=quoteInfo[symbol];
+  const metaInfo=inferredInfo(symbol);
   if(!metaInfo)return jsonResponse({error:"Unsupported symbol"},400);
   const isIndex=symbol==="^KS11"||symbol==="^KQ11";
-  const code=isIndex?(symbol==="^KS11"?"KOSPI":"KOSDAQ"):symbol.replace(".KS","");
+  const code=isIndex?(symbol==="^KS11"?"KOSPI":"KOSDAQ"):symbol.replace(/\.(KS|KQ)$/," ").trim();
   const url=isIndex?"https://polling.finance.naver.com/api/realtime/domestic/index/"+code:"https://m.stock.naver.com/api/stock/"+code+"/basic";
   const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
   if(!response.ok)return jsonResponse({error:"Naver HTTP "+response.status,symbol:symbol},502);
@@ -107,6 +137,52 @@ async function getNaverQuote(symbol){
   const id=metaInfo[0],name=metaInfo[1],marketName=metaInfo[2],kind=metaInfo[3];
   const item={id:id,name:name,localName:data.stockName||name,symbol:symbol,market:marketName,kind:kind,price:price,change:change,changePercent:percent,currency:"KRW",points:[price-change,price],source:"Naver Finance",pe:data.per||naverFundamental(data,["per"]),marketCap:data.marketValue||naverFundamental(data,["marketValue","marketCap"])};
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Naver Finance",subrequests:1},200);
+}
+
+async function getYahooTodayDetail(symbol){
+  const response=await fetch("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=1d&interval=5m&includePrePost=true",{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+  if(!response.ok)throw new Error("Yahoo HTTP "+response.status);
+  const json=await response.json(),result=json.chart&&json.chart.result&&json.chart.result[0];
+  if(!result)throw new Error("Yahoo empty response");
+  const timestamps=result.timestamp||[],quotes=result.indicators&&result.indicators.quote&&result.indicators.quote[0],closes=quotes&&quotes.close||[],today=marketDate(new Date(),"America/New_York"),labels=[],points=[],sessions=[];
+  timestamps.forEach(function(timestamp,index){const date=new Date(timestamp*1000),price=Number(closes[index]);if(marketDate(date,"America/New_York")===today&&Number.isFinite(price)){labels.push(date.toISOString());points.push(price);sessions.push(sessionForNewYork(date))}});
+  const meta=result.meta||{};
+  return {symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Yahoo US intraday",marketDate:today,marketTimeZone:"America/New_York",marketClosed:points.length===0,marketStatus:meta.marketState||null,previousClose:Number(meta.chartPreviousClose||meta.previousClose)||null,pe:meta.trailingPE||null,marketCap:meta.marketCap||null};
+}
+
+async function resolveNaverWorld(symbol,market){
+  const candidates=market==="US"?[symbol+".O",symbol+".N",symbol+".K"]:[symbol];
+  for(let i=0;i<candidates.length;i++){const code=candidates[i],response=await fetch("https://api.stock.naver.com/stock/"+encodeURIComponent(code)+"/basic",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});if(response.ok)return {code:code,data:await response.json()}}
+  throw new Error("Naver World symbol unavailable");
+}
+
+async function getNaverWorldTodayDetail(symbol,info){
+  const resolved=await resolveNaverWorld(symbol,info[2]),code=resolved.code,basic=resolved.data,timeZone=info[2]==="US"?"America/New_York":"Asia/Tokyo",today=marketDate(new Date(),timeZone);
+  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=500",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  const labels=[],points=[],sessions=[];
+  if(response.ok){const json=await response.json(),rows=Array.isArray(json)?json:(json.result||json.priceInfos||[]);rows.forEach(function(row){const raw=row.localTradedAt||row.tradedAt||row.date||"",date=/^\d{12,14}$/.test(String(raw))?new Date(Date.UTC(Number(String(raw).slice(0,4)),Number(String(raw).slice(4,6))-1,Number(String(raw).slice(6,8)),Number(String(raw).slice(8,10))-(info[2]==="US"?0:9),Number(String(raw).slice(10,12)))):new Date(raw),price=naverNumber(row.closePrice||row.close||row.currentPrice);if(!Number.isNaN(date.getTime())&&marketDate(date,timeZone)===today&&Number.isFinite(price)&&price>0){labels.push(date.toISOString());points.push(price);sessions.push(info[2]==="US"?sessionForNewYork(date):"regular")}})}
+  if(info[2]==="US"&&basic.overMarketPriceInfo&&basic.overMarketPriceInfo.localTradedAt){const over=basic.overMarketPriceInfo,date=new Date(over.localTradedAt),price=naverNumber(over.overPrice);if(marketDate(date,timeZone)===today&&Number.isFinite(price)&&price>0){labels.push(date.toISOString());points.push(price);sessions.push(String(over.tradingSessionType||"").includes("PRE")?"pre":"after")}}
+  return {symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Naver World intraday",marketDate:today,marketTimeZone:timeZone,marketClosed:points.length===0,marketStatus:basic.marketStatus||basic.overMarketPriceInfo&&basic.overMarketPriceInfo.overMarketStatus||null,previousClose:naverNumber(naverFundamental(basic,["basePrice"])),pe:basic.per||naverFundamental(basic,["per"]),marketCap:basic.marketValue||naverFundamental(basic,["marketValue","marketCap"])};
+}
+
+async function getTodayIntraday(symbol){
+  const info=inferredInfo(symbol);
+  if(!info)return jsonResponse({error:"Unsupported symbol"},400);
+  if(info[2]==="US"){
+    try{return jsonResponse(await getYahooTodayDetail(symbol),200)}catch(error){try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info),200)}catch(fallback){return jsonResponse({error:error.message+" / "+fallback.message,symbol:symbol},502)}}
+  }
+  if(info[2]==="JP"){
+    try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info),200)}catch(error){return jsonResponse({error:error.message,symbol:symbol},502)}
+  }
+  if(info[2]==="KR"&&info[3]==="stock"){
+    const code=symbol.replace(/\.(KS|KQ)$/,""),today=marketDate(new Date(),"Asia/Seoul"),response=await fetch("https://fchart.stock.naver.com/sise.nhn?symbol="+code+"&timeframe=minute&count=500&requestType=0",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/"}});
+    if(!response.ok)return jsonResponse({error:"Naver chart HTTP "+response.status},502);
+    const xml=await response.text(),labels=[],points=[],sessions=[],pattern=/<item\s+data=["']([^"']+)["']/g;let match;
+    while((match=pattern.exec(xml))!==null){const fields=match[1].split("|"),stamp=fields[0],price=Number(fields[4]);if(String(stamp).slice(0,8)===today&&Number.isFinite(price)){labels.push(stamp);points.push(price);sessions.push("regular")}}
+    let pe=null,marketCap=null;try{const fundamentalResponse=await fetch("https://m.stock.naver.com/api/stock/"+code+"/integration",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});if(fundamentalResponse.ok){const fundamental=await fundamentalResponse.json();pe=fundamental.per||naverFundamental(fundamental,["per"]);marketCap=fundamental.marketValue||naverFundamental(fundamental,["marketValue","marketCap"])}}catch(error){}
+    return jsonResponse({symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Naver Korea intraday",marketDate:today,marketTimeZone:"Asia/Seoul",marketClosed:points.length===0,pe:pe,marketCap:marketCap},200);
+  }
+  return jsonResponse({error:"该标的暂不支持当日分时",symbol:symbol},502);
 }
 
 async function getIntradayDetail(symbol){
@@ -211,13 +287,13 @@ async function handleRequest(request){
     return jsonResponse({base:"USD",rates:rates,date:rows[0]&&rows[0].date?rows[0].date:null,source:"Frankfurter"},200);
   }
   if(url.pathname==="/api/quote"){
-    const symbol=url.searchParams.get("symbol")||"";
-    if(url.searchParams.get("mode")==="detail")return getIntradayDetail(symbol);
-    const info=quoteInfo[symbol];
+    const symbol=(url.searchParams.get("symbol")||"").toUpperCase().trim();
+    if(url.searchParams.get("mode")==="detail")return getTodayIntraday(symbol);
+    const info=inferredInfo(symbol);
     if(info&&info[2]==="KR")return getNaverQuote(symbol);
     return getYahooQuote(symbol);
   }
-  if(url.pathname==="/api/detail")return getIntradayDetail(url.searchParams.get("symbol")||"");
+  if(url.pathname==="/api/detail")return getTodayIntraday((url.searchParams.get("symbol")||"").toUpperCase().trim());
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
