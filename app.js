@@ -180,11 +180,14 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('#detail
 
 function normalizeCustomSymbol(market,input){
   const raw=String(input||'').toUpperCase().replace(/\s+/g,'');
+  if(market==='ALL')market=/^[A-Z]/.test(raw)?'US':/^\d{4}(\.T)?$/.test(raw)?'JP':/^\d{6}(\.(KS|KQ))?$/.test(raw)?'KR':'';
   if(market==='US'&&/^[A-Z][A-Z0-9.-]{0,11}$/.test(raw))return raw;
   if(market==='JP'&&/^\d{4}(\.T)?$/.test(raw))return raw.endsWith('.T')?raw:raw+'.T';
   if(market==='KR'&&/^\d{6}(\.(KS|KQ))?$/.test(raw))return /\.(KS|KQ)$/.test(raw)?raw:raw+'.KS';
   return null;
 }
+
+function marketForSymbol(symbol){return /\.T$/.test(symbol)?'JP':/\.(KS|KQ)$/.test(symbol)?'KR':'US'}
 
 function customForSymbol(symbol){return state.customStocks.find(item=>item.symbol===symbol)}
 function allSymbols(){return [...new Set([...DEFAULT_SYMBOLS,...state.customStocks.map(item=>item.symbol)])]}
@@ -194,17 +197,41 @@ function renderCustomStocks(){
   $$('[data-remove-symbol]').forEach(button=>button.onclick=()=>{state.customStocks=state.customStocks.filter(item=>item.symbol!==button.dataset.removeSymbol);localStorage.setItem('mirai-custom-stocks',JSON.stringify(state.customStocks));renderCustomStocks();refreshQuotes(true)});
 }
 
-$('#open-add-stock').onclick=()=>{$('#add-stock').hidden=false;renderCustomStocks();$('#stock-symbol').focus()};
+let selectedSearch=null,searchTimer=null,searchController=null;
+
+function hideSearchResults(){$('#stock-search-results').hidden=true;$('#stock-search-results').innerHTML=''}
+function chooseSearchResult(result){selectedSearch=result;$('#stock-symbol').value=result.symbol;$('#stock-query').value=result.name||result.localName||result.symbol;$('#stock-name').value=result.name||result.localName||'';$('#stock-market').value=result.market;$('#stock-search-state').textContent=`已选择 ${result.symbol}`;hideSearchResults()}
+function renderSearchResults(results){
+  const container=$('#stock-search-results');
+  if(!results.length){container.innerHTML='<p>没有找到匹配股票，可直接输入规范代码添加。</p>';container.hidden=false;return}
+  container.innerHTML=results.map((result,index)=>`<button type="button" data-search-index="${index}"><strong>${escapeHTML(result.name||result.localName||result.symbol)}</strong><span>${escapeHTML(result.symbol)} · ${escapeHTML(result.market)}${result.localName&&result.localName!==result.name?' · '+escapeHTML(result.localName):''}</span></button>`).join('');
+  container.hidden=false;
+  $$('[data-search-index]').forEach(button=>button.onclick=()=>chooseSearchResult(results[Number(button.dataset.searchIndex)]));
+}
+
+async function searchStockNames(){
+  const query=$('#stock-query').value.trim(),market=$('#stock-market').value;
+  if(query.length<1){$('#stock-search-state').textContent='';hideSearchResults();return}
+  if(searchController)searchController.abort();searchController=new AbortController();
+  $('#stock-search-state').textContent='搜索中…';
+  try{const response=await fetch('/api/search?q='+encodeURIComponent(query)+'&market='+encodeURIComponent(market),{signal:searchController.signal,headers:{Accept:'application/json'}});const data=await response.json();if(!response.ok)throw Error(data.error||'搜索失败');$('#stock-search-state').textContent=`找到 ${data.results.length} 项`;renderSearchResults(data.results)}catch(error){if(error.name!=='AbortError'){$('#stock-search-state').textContent='搜索暂不可用';hideSearchResults()}}
+}
+
+$('#stock-query').oninput=()=>{selectedSearch=null;$('#stock-symbol').value='';$('#add-stock-error').textContent='';clearTimeout(searchTimer);searchTimer=setTimeout(searchStockNames,300)};
+$('#stock-market').onchange=()=>{selectedSearch=null;$('#stock-symbol').value='';clearTimeout(searchTimer);searchTimer=setTimeout(searchStockNames,100)};
+$('#open-add-stock').onclick=()=>{$('#add-stock').hidden=false;renderCustomStocks();$('#stock-query').focus()};
 $('#close-add-stock').onclick=()=>$('#add-stock').hidden=true;
 $('#add-stock').onclick=event=>{if(event.target.id==='add-stock')event.currentTarget.hidden=true};
 $('#add-stock-form').onsubmit=event=>{
   event.preventDefault();
-  const market=$('#stock-market').value,symbol=normalizeCustomSymbol(market,$('#stock-symbol').value),name=$('#stock-name').value.trim();
+  let market=selectedSearch?.market||$('#stock-market').value;
+  const symbol=selectedSearch?.symbol||normalizeCustomSymbol(market,$('#stock-query').value),name=$('#stock-name').value.trim()||selectedSearch?.name||'';
+  if(symbol&&market==='ALL')market=marketForSymbol(symbol);
   if(!symbol){$('#add-stock-error').textContent='代码格式不正确，请检查所选市场。';return}
   if(DEFAULT_SYMBOLS.includes(symbol)||customForSymbol(symbol)){$('#add-stock-error').textContent='该股票已经在列表中。';return}
   state.customStocks.push({market,symbol,name});
   localStorage.setItem('mirai-custom-stocks',JSON.stringify(state.customStocks));
-  $('#add-stock-error').textContent='';$('#stock-symbol').value='';$('#stock-name').value='';renderCustomStocks();refreshQuotes(true);
+  selectedSearch=null;$('#add-stock-error').textContent='';$('#stock-symbol').value='';$('#stock-query').value='';$('#stock-name').value='';$('#stock-search-state').textContent='';hideSearchResults();renderCustomStocks();refreshQuotes(true);
 };
 
 $('#currency-select').value=state.currency;

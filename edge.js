@@ -31,6 +31,29 @@ const quoteInfo={
   "042700.KS":["hanmi","韩美半导体","KR","stock"],"373220.KS":["lges","LG新能源","KR","stock"]
 };
 
+const searchCatalog=[
+  {symbol:"6758.T",market:"JP",name:"索尼集团",localName:"Sony Group ソニーグループ"},{symbol:"8035.T",market:"JP",name:"东京电子",localName:"Tokyo Electron 東京エレクトロン"},{symbol:"6857.T",market:"JP",name:"爱德万测试",localName:"Advantest アドバンテスト"},{symbol:"6861.T",market:"JP",name:"基恩士",localName:"Keyence キーエンス"},{symbol:"9984.T",market:"JP",name:"软银集团",localName:"SoftBank Group ソフトバンク"},{symbol:"6723.T",market:"JP",name:"瑞萨电子",localName:"Renesas ルネサス"},{symbol:"6146.T",market:"JP",name:"迪思科",localName:"Disco ディスコ"},{symbol:"7974.T",market:"JP",name:"任天堂",localName:"Nintendo 任天堂"},{symbol:"7203.T",market:"JP",name:"丰田汽车",localName:"Toyota トヨタ自動車"},
+  {symbol:"005930.KS",market:"KR",name:"三星电子",localName:"Samsung Electronics 삼성전자"},{symbol:"000660.KS",market:"KR",name:"SK海力士",localName:"SK hynix SK하이닉스"},{symbol:"035420.KS",market:"KR",name:"NAVER",localName:"네이버"},{symbol:"035720.KS",market:"KR",name:"Kakao",localName:"카카오"},{symbol:"066570.KS",market:"KR",name:"LG电子",localName:"LG Electronics LG전자"},{symbol:"009150.KS",market:"KR",name:"三星电机",localName:"Samsung Electro-Mechanics 삼성전기"},{symbol:"042700.KS",market:"KR",name:"韩美半导体",localName:"Hanmi Semiconductor 한미반도체"},{symbol:"373220.KS",market:"KR",name:"LG新能源",localName:"LG Energy Solution"},
+  {symbol:"AAPL",market:"US",name:"苹果",localName:"Apple Inc."},{symbol:"MSFT",market:"US",name:"微软",localName:"Microsoft Corporation"},{symbol:"NVDA",market:"US",name:"英伟达",localName:"NVIDIA Corporation"},{symbol:"AMZN",market:"US",name:"亚马逊",localName:"Amazon.com Inc."},{symbol:"GOOGL",market:"US",name:"谷歌",localName:"Alphabet Inc."},{symbol:"META",market:"US",name:"Meta",localName:"Meta Platforms"},{symbol:"TSLA",market:"US",name:"特斯拉",localName:"Tesla Inc."},{symbol:"AMD",market:"US",name:"AMD",localName:"Advanced Micro Devices"}
+];
+
+function marketFromYahoo(symbol,exchange){
+  if(/\.T$/i.test(symbol)||/JPX|TYO/i.test(exchange||""))return "JP";
+  if(/\.(KS|KQ)$/i.test(symbol)||/KSC|KOE/i.test(exchange||""))return "KR";
+  if(inferredInfo(String(symbol||"").toUpperCase())?.[2]==="US")return "US";
+  return null;
+}
+
+async function searchStocks(query,market){
+  const term=String(query||"").trim(),wanted=market&&market!=="ALL"?market:null,needle=term.toLocaleLowerCase(),results=[];
+  searchCatalog.forEach(item=>{const haystack=(item.symbol+" "+item.name+" "+item.localName).toLocaleLowerCase();if((!wanted||item.market===wanted)&&haystack.includes(needle))results.push(item)});
+  try{
+    const response=await fetch("https://query1.finance.yahoo.com/v1/finance/search?q="+encodeURIComponent(term)+"&quotesCount=12&newsCount=0",{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+    if(response.ok){const json=await response.json();(json.quotes||[]).forEach(quote=>{if(!["EQUITY","ETF"].includes(quote.quoteType))return;const symbol=String(quote.symbol||"").toUpperCase(),detected=marketFromYahoo(symbol,quote.exchange);if(!detected||wanted&&detected!==wanted||!inferredInfo(symbol))return;results.push({symbol:symbol,market:detected,name:quote.longname||quote.shortname||symbol,localName:quote.shortname||quote.longname||symbol})})}
+  }catch(error){}
+  const seen=new Set();return results.filter(item=>{if(seen.has(item.symbol))return false;seen.add(item.symbol);return true}).slice(0,12);
+}
+
 function inferredInfo(symbol){
   const fixed=quoteInfo[symbol];
   if(fixed)return fixed;
@@ -285,6 +308,12 @@ async function handleRequest(request){
     const rows=await response.json(),rates={USD:1};
     rows.forEach(function(row){rates[row.quote]=Number(row.rate)});
     return jsonResponse({base:"USD",rates:rates,date:rows[0]&&rows[0].date?rows[0].date:null,source:"Frankfurter"},200);
+  }
+  if(url.pathname==="/api/search"){
+    const query=(url.searchParams.get("q")||"").trim(),market=(url.searchParams.get("market")||"ALL").toUpperCase();
+    if(query.length<1||query.length>40)return jsonResponse({error:"搜索词长度应为 1-40 个字符"},400);
+    if(!["ALL","US","JP","KR"].includes(market))return jsonResponse({error:"不支持的市场"},400);
+    return jsonResponse({query:query,market:market,results:await searchStocks(query,market)},200);
   }
   if(url.pathname==="/api/quote"){
     const symbol=(url.searchParams.get("symbol")||"").toUpperCase().trim();
