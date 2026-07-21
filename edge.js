@@ -268,7 +268,7 @@ async function resolveNaverWorld(symbol,market){
 
 async function getNaverWorldTodayDetail(symbol,info,requestedDate){
   const resolved=await resolveNaverWorld(symbol,info[2]),code=resolved.code,basic=resolved.data,timeZone=info[2]==="US"?"America/New_York":"Asia/Tokyo";
-  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=2000",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=1000",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
   const rows=[];
   if(response.ok){const json=await response.json(),sourceRows=Array.isArray(json)?json:(json.result||json.priceInfos||[]);sourceRows.forEach(function(row){const raw=row.localTradedAt||row.tradedAt||row.date||"",date=/^\d{12,14}$/.test(String(raw))?new Date(Date.UTC(Number(String(raw).slice(0,4)),Number(String(raw).slice(4,6))-1,Number(String(raw).slice(6,8)),Number(String(raw).slice(8,10))-(info[2]==="US"?0:9),Number(String(raw).slice(10,12)))):new Date(raw),price=naverNumber(row.closePrice||row.close||row.currentPrice);if(!Number.isNaN(date.getTime())&&Number.isFinite(price)&&price>0)rows.push({date:date,marketDate:marketDate(date,timeZone),price:price,session:info[2]==="US"?sessionForNewYork(date):"regular"})})}
   if(info[2]==="US"&&basic.overMarketPriceInfo&&basic.overMarketPriceInfo.localTradedAt){const over=basic.overMarketPriceInfo,date=new Date(over.localTradedAt),price=naverNumber(over.overPrice);if(!Number.isNaN(date.getTime())&&Number.isFinite(price)&&price>0)rows.push({date:date,marketDate:marketDate(date,timeZone),price:price,session:String(over.tradingSessionType||"").includes("PRE")?"pre":"after"})}
@@ -288,7 +288,7 @@ async function getTodayIntraday(symbol,requestedDate){
     try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info,requestedDate),200)}catch(error){return jsonResponse({error:error.message,symbol:symbol},502)}
   }
   if(info[2]==="KR"&&info[3]==="stock"){
-    const code=symbol.replace(/\.(KS|KQ)$/,""),response=await fetch("https://fchart.stock.naver.com/sise.nhn?symbol="+code+"&timeframe=minute&count=2000&requestType=0",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/"}});
+    const code=symbol.replace(/\.(KS|KQ)$/,""),response=await fetch("https://fchart.stock.naver.com/sise.nhn?symbol="+code+"&timeframe=minute&count=1000&requestType=0",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/"}});
     if(!response.ok)return jsonResponse({error:"Naver chart HTTP "+response.status},502);
     const xml=await response.text(),rows=[],pattern=/<item\s+data=["']([^"']+)["']/g;let match;
     while((match=pattern.exec(xml))!==null){const fields=match[1].split("|"),stamp=fields[0],price=Number(fields[4]),day=String(stamp).slice(0,4)+"-"+String(stamp).slice(4,6)+"-"+String(stamp).slice(6,8);if(Number.isFinite(price))rows.push({stamp:stamp,price:price,day:day})}
