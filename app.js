@@ -12,6 +12,7 @@ function readJSON(key,fallback){
 
 const state={
   items:[],market:'ALL',
+  chinaEtfs:[],activeEtf:null,
   favorites:readJSON('mirai-favorites',[]),
   customStocks:readJSON('mirai-custom-stocks',[]),
   currency:localStorage.getItem('mirai-currency')||'LOCAL',
@@ -95,6 +96,9 @@ function stock(item){
 }
 
 function render(){
+  const chinaOnly=state.market==='CN';
+  $('#global-market-sections').hidden=chinaOnly;
+  $('#china-market-section').hidden=!chinaOnly;
   const items=state.items.filter(item=>state.market==='ALL'||item.market===state.market).sort((a,b)=>Number(state.favorites.includes(b.id))-Number(state.favorites.includes(a.id)));
   $('#indexes').innerHTML=items.filter(item=>item.kind==='index').map(card).join('');
   $('#stocks').innerHTML=items.filter(item=>item.kind==='stock').map(stock).join('');
@@ -136,6 +140,7 @@ function parseDetailPayload(text){
 async function openDetail(symbol){
   const item=state.items.find(value=>value.symbol===symbol);
   if(!item)return;
+  state.activeEtf=null;
   $('#detail').hidden=false;
   document.body.style.overflow='hidden';
   $('#detail-market').textContent=({KR:'韩国市场',JP:'日本市场',US:'美国市场'}[item.market]||item.market)+' · '+item.source;
@@ -149,6 +154,8 @@ async function openDetail(symbol){
   $('#detail-cap').textContent=item._marketCapRaw?marketCap(item._marketCapRaw,item.currency):(item.marketCap||'暂无数据');
   $('#detail-point').textContent='将鼠标移到曲线上';
   $('#market-closed').hidden=true;
+  $('#detail-intervals').hidden=true;
+  $('#detail-date-note').textContent='仅显示交易所当地自然日的成交点位';
   $('#session-legend').hidden=true;
   $('#detail-chart').innerHTML='<p>正在获取交易所今日走势…</p>';
   $('#detail-source').textContent='正在连接详情数据源';
@@ -172,6 +179,54 @@ async function openDetail(symbol){
     $('#detail-source').textContent='当日走势暂不可用';
   }
 }
+
+async function requestJSON(url,label){
+  const response=await fetch(url,{headers:{Accept:'application/json'}}),text=await response.text(),type=(response.headers.get('content-type')||'').toLowerCase();
+  if(!type.includes('application/json'))throw Error(label+'接口路由尚未生效，请确认边缘函数已发布');
+  let data;try{data=JSON.parse(text)}catch(error){throw Error(label+'接口返回了无法识别的内容')}
+  if(!response.ok)throw Error(data.error||label+'接口不可用');
+  return data;
+}
+
+async function loadEtfChart(interval){
+  const etf=state.activeEtf;if(!etf)return;
+  $$('[data-etf-interval]').forEach(button=>button.classList.toggle('active',Number(button.dataset.etfInterval)===Number(interval)));
+  $('#detail-chart').innerHTML='<p>正在获取最近交易日分时走势…</p>';
+  $('#detail-source').textContent='正在连接ETF分时数据源';
+  try{
+    const data=await requestJSON('/api/china-etf-detail?symbol='+encodeURIComponent(etf.symbol)+'&interval='+interval,'ETF分时');
+    const fallback=Boolean(data.fallbackDate);
+    $('#market-closed').hidden=!fallback;
+    $('#market-closed').className='market-alert'+(fallback?' notice':'');
+    $('#market-closed').textContent=fallback?`当前为非交易日或尚未开盘，展示最近交易日 ${data.marketDate} 的完整数据。`:'';
+    $('#detail-chart').innerHTML=fullChart(data.points,data.labels,'CNY',data.previousClose||null,data.sessions||[]);
+    $('#detail-source').textContent=`${data.source} · ${interval}分钟 · ${data.points.length} 个点位`;
+    $('#detail-date-note').textContent=`交易日 ${data.marketDate} · 北京时间`;
+    wireChartPoints();
+  }catch(error){
+    $('#detail-chart').innerHTML=`<p>${escapeHTML(error.message)}</p>`;
+    $('#detail-source').textContent='ETF分时走势暂不可用';
+  }
+}
+
+function openEtfDetail(symbol){
+  const etf=state.chinaEtfs.find(item=>item.symbol===symbol);if(!etf)return;
+  state.activeEtf=etf;
+  $('#detail').hidden=false;document.body.style.overflow='hidden';
+  $('#detail-market').textContent='中国A股 · 宽基ETF';
+  $('#detail-name').textContent=etf.name;
+  $('#detail-symbol').textContent=etf.index+' · '+etf.symbol;
+  $('#detail-price').textContent=etf.price==null?'—':money(etf.price,'CNY');
+  $('#detail-change').className=etf.changePercent>=0?'gain':'loss';
+  $('#detail-change').textContent=etf.changePercent==null?'—':signedNumber(etf.changePercent)+'%';
+  $('#detail-pe').textContent='ETF不适用';$('#detail-cap').textContent='ETF不适用';
+  $('#detail-point').textContent='轻触或将鼠标移到曲线上';
+  $('#session-legend').hidden=true;$('#market-closed').hidden=true;
+  $('#detail-intervals').hidden=false;
+  loadEtfChart(1);
+}
+
+$$('[data-etf-interval]').forEach(button=>button.onclick=()=>loadEtfChart(Number(button.dataset.etfInterval)));
 
 function closeDetail(){$('#detail').hidden=true;document.body.style.overflow=''}
 $('#close-detail').onclick=closeDetail;
@@ -296,12 +351,13 @@ function signedNumber(value){const number=Number(value)||0;return (number>0?'+':
 async function loadChinaMonitor(){
   $('#etf-flow-updated').textContent='正在更新…';$('#cffex-updated').textContent='正在更新…';
   const [etfResult,cffexResult]=await Promise.allSettled([
-    fetch('/api/china-etf-flow',{headers:{Accept:'application/json'}}).then(async response=>{const data=await response.json();if(!response.ok)throw Error(data.error||'ETF资金接口失败');return data}),
-    fetch('/api/cffex-positions',{headers:{Accept:'application/json'}}).then(async response=>{const data=await response.json();if(!response.ok)throw Error(data.error||'中金所接口失败');return data})
+    requestJSON('/api/china-etf-flow','ETF资金'),
+    requestJSON('/api/cffex-positions','中金所')
   ]);
   if(etfResult.status==='fulfilled'){
-    const data=etfResult.value;$('#etf-flow-updated').textContent='更新 '+new Date(data.updatedAt).toLocaleString('zh-CN');
-    $('#etf-flow-body').innerHTML=data.rows.map(row=>`<tr><td><strong>${escapeHTML(row.symbol)}</strong><small>${escapeHTML(row.name)}</small></td><td>${escapeHTML(row.index)}</td><td>${row.price==null?'—':Number(row.price).toFixed(3)}</td><td class="${row.changePercent>=0?'flow-in':'flow-out'}">${row.changePercent==null?'—':signedNumber(row.changePercent)+'%'}</td><td class="${row.mainNet>=0?'flow-in':'flow-out'}">${row.available?compactCny(row.mainNet):'暂无'}</td><td class="${row.mainRatio>=0?'flow-in':'flow-out'}">${row.available?signedNumber(row.mainRatio)+'%':'—'}</td><td>${escapeHTML(row.date||'—')}</td></tr>`).join('');
+    const data=etfResult.value;state.chinaEtfs=data.rows||[];$('#etf-flow-updated').textContent='更新 '+new Date(data.updatedAt).toLocaleString('zh-CN');
+    $('#etf-flow-body').innerHTML=state.chinaEtfs.map(row=>`<tr class="etf-row" data-etf-detail="${escapeHTML(row.symbol)}" tabindex="0" role="button"><td><strong>${escapeHTML(row.symbol)}</strong><small>${escapeHTML(row.name)}</small></td><td>${escapeHTML(row.index)}</td><td>${row.price==null?'—':Number(row.price).toFixed(3)}</td><td class="${row.changePercent>=0?'flow-in':'flow-out'}">${row.changePercent==null?'—':signedNumber(row.changePercent)+'%'}</td><td class="${row.mainNet>=0?'flow-in':'flow-out'}">${row.available?compactCny(row.mainNet):'暂无'}</td><td class="${row.mainRatio>=0?'flow-in':'flow-out'}">${row.available?signedNumber(row.mainRatio)+'%':'—'}</td><td>${escapeHTML(row.date||'—')}</td></tr>`).join('');
+    $$('[data-etf-detail]').forEach(row=>{row.onclick=()=>openEtfDetail(row.dataset.etfDetail);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openEtfDetail(row.dataset.etfDetail)}}});
   }else{$('#etf-flow-updated').textContent='更新失败';$('#etf-flow-body').innerHTML=`<tr><td colspan="7">${escapeHTML(etfResult.reason?.message||'ETF资金数据暂不可用')}</td></tr>`}
   if(cffexResult.status==='fulfilled'){
     const data=cffexResult.value;$('#cffex-updated').textContent=data.date?`交易日 ${data.date.slice(0,4)}-${data.date.slice(4,6)}-${data.date.slice(6,8)}`:'暂无收盘数据';

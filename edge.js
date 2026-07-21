@@ -51,6 +51,29 @@ async function getChinaEtfFlows(){
   return {rows:rows,updatedAt:new Date().toISOString(),source:"东方财富 ETF 主力资金流",basis:"公开基金定期报告重点持有人观察池；资金字段为二级市场主力交易资金口径，不等于ETF净申购"};
 }
 
+function eastmoneyJson(response,label){
+  if(!response.ok)throw new Error(label+" HTTP "+response.status);
+  return response.text().then(function(text){try{return JSON.parse(text)}catch(error){throw new Error(label+" 返回了非JSON内容")}});
+}
+
+async function getChinaEtfDetail(symbol,interval){
+  const etf=nationalTeamEtfs.find(function(item){return item.symbol===symbol});
+  if(!etf)throw new Error("不支持的宽基ETF代码");
+  const allowed=[1,5,15,30,60],period=allowed.includes(Number(interval))?Number(interval):1;
+  const base="https://push2his.eastmoney.com/api/qt/stock/",chartUrl=period===1
+    ?base+"trends2/get?secid="+etf.secid+"&ndays=5&iscr=0&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
+    :base+"kline/get?secid="+etf.secid+"&klt="+period+"&fqt=1&lmt=1000&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61";
+  const quoteUrl="https://push2.eastmoney.com/api/qt/stock/get?secid="+etf.secid+"&fields=f43,f57,f58,f60,f169,f170";
+  const headers={"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/","Accept":"application/json"};
+  const responses=await Promise.all([fetch(chartUrl,{headers:headers}),fetch(quoteUrl,{headers:headers})]);
+  const payloads=await Promise.all([eastmoneyJson(responses[0],"ETF分时"),eastmoneyJson(responses[1],"ETF行情")]),chart=payloads[0],quote=payloads[1]&&payloads[1].data||{};
+  const raw=period===1?(chart.data&&chart.data.trends||[]):(chart.data&&chart.data.klines||[]),all=[];
+  raw.forEach(function(line){const cells=String(line).split(","),stamp=cells[0],price=Number(period===1?cells[1]:cells[2]);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(stamp)&&Number.isFinite(price)&&price>0)all.push({stamp:stamp,price:price})});
+  if(!all.length)throw new Error("最近交易日暂无有效分时数据");
+  const tradingDate=all[all.length-1].stamp.slice(0,10),selected=all.filter(function(point){return point.stamp.slice(0,10)===tradingDate}),today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  return {symbol:etf.symbol,name:etf.name,index:etf.index,interval:period,labels:selected.map(function(point){return point.stamp.replace(" ","T")+":00+08:00"}),points:selected.map(function(point){return point.price}),sessions:selected.map(function(){return "regular"}),source:"东方财富 ETF 分时",marketDate:tradingDate,marketTimeZone:"Asia/Shanghai",marketClosed:false,fallbackDate:tradingDate!==today,previousClose:Number(quote.f60)/1000||null,price:Number(quote.f43)/1000||selected[selected.length-1].price,change:Number(quote.f169)/1000||0,changePercent:Number(quote.f170)/100||0,currency:"CNY"};
+}
+
 function csvCells(line){const cells=[];let value="",quoted=false;for(let i=0;i<line.length;i++){const char=line[i];if(char==='"'){if(quoted&&line[i+1]==='"'){value+='"';i++}else quoted=!quoted}else if(char===","&&!quoted){cells.push(value.trim());value=""}else value+=char}cells.push(value.trim());return cells}
 function numberCell(value){const number=Number(String(value||"").replace(/,/g,"").replace(/[^\d.-]/g,""));return Number.isFinite(number)?number:0}
 function cffexDate(date){return date.getUTCFullYear().toString()+String(date.getUTCMonth()+1).padStart(2,"0")+String(date.getUTCDate()).padStart(2,"0")}
@@ -354,8 +377,9 @@ async function handleRequest(request){
     if(!["ALL","US","JP","KR"].includes(market))return jsonResponse({error:"不支持的市场"},400);
     return jsonResponse({query:query,market:market,results:await searchStocks(query,market)},200);
   }
-  if(url.pathname==="/api/china-etf-flow")return jsonResponse(await getChinaEtfFlows(),200);
-  if(url.pathname==="/api/cffex-positions")return jsonResponse(await getCffexPositions(),200);
+  if(url.pathname==="/api/china-etf-flow"){try{return jsonResponse(await getChinaEtfFlows(),200)}catch(error){return jsonResponse({error:error.message||"ETF资金数据暂不可用"},502)}}
+  if(url.pathname==="/api/china-etf-detail"){try{return jsonResponse(await getChinaEtfDetail((url.searchParams.get("symbol")||"").trim(),url.searchParams.get("interval")),200)}catch(error){return jsonResponse({error:error.message||"ETF分时数据暂不可用"},502)}}
+  if(url.pathname==="/api/cffex-positions"){try{return jsonResponse(await getCffexPositions(),200)}catch(error){return jsonResponse({date:null,rows:[],error:error.message||"中金所排名暂不可用"},502)}}
   if(url.pathname==="/api/quote"){
     const symbol=(url.searchParams.get("symbol")||"").toUpperCase().trim();
     if(url.searchParams.get("mode")==="detail")return getTodayIntraday(symbol);
