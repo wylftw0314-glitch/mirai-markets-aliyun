@@ -12,7 +12,7 @@ function readJSON(key,fallback){
 
 const state={
   items:[],market:'ALL',
-  chinaEtfs:[],activeEtf:null,
+  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,
   favorites:readJSON('mirai-favorites',[]),
   customStocks:readJSON('mirai-custom-stocks',[]),
   currency:localStorage.getItem('mirai-currency')||'LOCAL',
@@ -22,6 +22,25 @@ const settings={theme:'paper',rise:'green',accent:'#0d6b55',...readJSON('mirai-s
 const $=selector=>document.querySelector(selector);
 const $$=selector=>[...document.querySelectorAll(selector)];
 const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+
+$('#market-closed').insertAdjacentHTML('afterend','<div id="detail-date-controls" class="detail-date-controls"><button id="detail-prev-day" type="button" aria-label="上一交易日">‹ 上一交易日</button><label>交易日 <input id="detail-date" type="date" aria-label="选择交易日"></label><button id="detail-next-day" type="button" aria-label="下一交易日">下一交易日 ›</button><button id="detail-latest-day" type="button">最新</button></div>');
+
+function updateDetailDateControls(data){
+  state.detailDate=data.marketDate||state.detailDate;
+  state.detailDates=Array.isArray(data.availableDates)?data.availableDates:state.detailDate?[state.detailDate]:[];
+  const input=$('#detail-date'),index=state.detailDates.indexOf(state.detailDate);
+  input.value=state.detailDate||'';
+  if(state.detailDates.length){input.min=state.detailDates[0];input.max=state.detailDates[state.detailDates.length-1]}
+  $('#detail-prev-day').disabled=index<=0;
+  $('#detail-next-day').disabled=index<0||index>=state.detailDates.length-1;
+  $('#detail-latest-day').disabled=index===state.detailDates.length-1;
+}
+
+function reloadDetailForDate(date){
+  state.detailDate=date||null;
+  if(state.activeEtf)loadEtfChart(state.detailInterval,date);
+  else if(state.activeDetail)openDetail(state.activeDetail.symbol,date);
+}
 
 function applySettings(){
   document.documentElement.dataset.theme=settings.theme;
@@ -153,10 +172,13 @@ function parseDetailPayload(text){
   try{return JSON.parse(text)}catch(error){throw Error('详情接口返回了无法识别的内容')}
 }
 
-async function openDetail(symbol){
+async function openDetail(symbol,requestedDate){
   const item=state.items.find(value=>value.symbol===symbol);
   if(!item)return;
   state.activeEtf=null;
+  state.activeDetail=item;
+  state.detailDate=requestedDate||null;
+  if(!requestedDate)state.detailDates=[];
   $('#detail').hidden=false;
   document.body.style.overflow='hidden';
   $('#detail-market').textContent=({KR:'韩国市场',JP:'日本市场',US:'美国市场'}[item.market]||item.market)+' · '+item.source;
@@ -176,20 +198,22 @@ async function openDetail(symbol){
   $('#detail-chart').innerHTML='<p>正在获取交易所今日走势…</p>';
   $('#detail-source').textContent='正在连接详情数据源';
   try{
-    const response=await fetch('/api/quote?mode=detail&symbol='+encodeURIComponent(symbol),{headers:{Accept:'application/json'}});
+    const response=await fetch('/api/quote?mode=detail&symbol='+encodeURIComponent(symbol)+(requestedDate?'&date='+encodeURIComponent(requestedDate):''),{headers:{Accept:'application/json'}});
     if(!(response.headers.get('content-type')||'').toLowerCase().includes('application/json'))throw Error('详情接口被静态页面接管，请重新部署最新版本');
     const data=parseDetailPayload(await response.text());
     if(!response.ok)throw Error(data.error||'详情接口不可用');
     if(data.pe)$('#detail-pe').textContent=peRatio(data.pe);
     if(data.marketCap)$('#detail-cap').textContent=marketCap(data.marketCap,item.currency);
+    updateDetailDateControls(data);
     const closed=Boolean(data.marketClosed)||!data.points?.length;
     $('#market-closed').hidden=!closed;
     $('#market-closed').textContent=`今日休市或尚无成交：${data.marketDate||'交易所今天'}没有有效分时点位。`;
     const hasExtended=item.market==='US'&&data.sessions?.some(session=>session==='pre'||session==='after');
     $('#session-legend').hidden=!hasExtended;
-    $('#detail-chart').innerHTML=closed?'<p>今日没有成交数据，不展示上一交易日走势。</p>':fullChart(data.points,data.labels,item.currency,data.previousClose||item.price-item.change,data.sessions||[]);
+    $('#detail-chart').innerHTML=closed?'<p>所选交易日没有成交数据。</p>':fullChart(data.points,data.labels,item.currency,data.previousClose||data.points[0],data.sessions||[]);
     if(!closed)wireChartPoints();
-    $('#detail-source').textContent=(data.source||'当日走势')+' · '+(data.points?.length||0)+' 个当日数据点';
+    $('#detail-source').textContent=(data.source||'分时走势')+' · '+(data.points?.length||0)+' 个数据点';
+    $('#detail-date-note').textContent=`交易日 ${data.marketDate} · 显示为用户本地时区`;
   }catch(error){
     $('#detail-chart').innerHTML=`<p>${escapeHTML(error.message)}</p>`;
     $('#detail-source').textContent='当日走势暂不可用';
@@ -204,13 +228,16 @@ async function requestJSON(url,label){
   return data;
 }
 
-async function loadEtfChart(interval){
+async function loadEtfChart(interval,requestedDate){
   const etf=state.activeEtf;if(!etf)return;
+  state.detailInterval=Number(interval)||1;
+  if(requestedDate!==undefined)state.detailDate=requestedDate||null;
   $$('[data-etf-interval]').forEach(button=>button.classList.toggle('active',Number(button.dataset.etfInterval)===Number(interval)));
   $('#detail-chart').innerHTML='<p>正在获取最近交易日分时走势…</p>';
   $('#detail-source').textContent='正在连接ETF分时数据源';
   try{
-    const data=await requestJSON('/api/china-etf-detail?symbol='+encodeURIComponent(etf.symbol)+'&interval='+interval,'ETF分时');
+    const data=await requestJSON('/api/china-etf-detail?symbol='+encodeURIComponent(etf.symbol)+'&interval='+interval+(state.detailDate?'&date='+encodeURIComponent(state.detailDate):''),'ETF分时');
+    updateDetailDateControls(data);
     const fallback=Boolean(data.fallbackDate);
     $('#market-closed').hidden=!fallback;
     $('#market-closed').className='market-alert'+(fallback?' notice':'');
@@ -228,6 +255,7 @@ async function loadEtfChart(interval){
 function openEtfDetail(symbol){
   const etf=state.chinaEtfs.find(item=>item.symbol===symbol);if(!etf)return;
   state.activeEtf=etf;
+  state.activeDetail=null;state.detailDate=null;state.detailDates=[];state.detailInterval=1;
   $('#detail').hidden=false;document.body.style.overflow='hidden';
   $('#detail-market').textContent='中国A股 · 宽基ETF';
   $('#detail-name').textContent=etf.name;
@@ -243,6 +271,10 @@ function openEtfDetail(symbol){
 }
 
 $$('[data-etf-interval]').forEach(button=>button.onclick=()=>loadEtfChart(Number(button.dataset.etfInterval)));
+$('#detail-date').onchange=event=>{if(event.target.value)reloadDetailForDate(event.target.value)};
+$('#detail-prev-day').onclick=()=>{const index=state.detailDates.indexOf(state.detailDate);if(index>0)reloadDetailForDate(state.detailDates[index-1])};
+$('#detail-next-day').onclick=()=>{const index=state.detailDates.indexOf(state.detailDate);if(index>=0&&index<state.detailDates.length-1)reloadDetailForDate(state.detailDates[index+1])};
+$('#detail-latest-day').onclick=()=>reloadDetailForDate(null);
 
 function closeDetail(){$('#detail').hidden=true;document.body.style.overflow=''}
 $('#close-detail').onclick=closeDetail;

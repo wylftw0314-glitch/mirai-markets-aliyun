@@ -73,7 +73,7 @@ function eastmoneyJson(response,label){
   return response.text().then(function(text){try{return JSON.parse(text)}catch(error){throw new Error(label+" 返回了非JSON内容")}});
 }
 
-async function getChinaEtfDetail(symbol,interval){
+async function getChinaEtfDetail(symbol,interval,requestedDate){
   const etf=nationalTeamEtfs.find(function(item){return item.symbol===symbol});
   if(!etf)throw new Error("不支持的宽基ETF代码");
   const allowed=[1,5,15,30,60],period=allowed.includes(Number(interval))?Number(interval):1;
@@ -84,10 +84,14 @@ async function getChinaEtfDetail(symbol,interval){
   const payloads=await Promise.all([eastmoneyJson(responses[0],"ETF分时"),eastmoneyJson(responses[1],"ETF行情")]),chart=payloads[0],quote=payloads[1]&&payloads[1].data||{};
   const raw=chart.data&&chart.data.trends||[],all=[];let detailSource="东方财富 ETF 分时";
   raw.forEach(function(line){const cells=String(line).split(","),stamp=cells[0],open=Number(cells[1]),price=Number(cells[2]),high=Number(cells[3]),low=Number(cells[4]),volume=Number(cells[5]),amount=Number(cells[6]),average=Number(cells[7]);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(stamp)&&Number.isFinite(price)&&price>0)all.push({stamp:stamp,open:open,price:price,high:high,low:low,volume:Number.isFinite(volume)?volume:0,amount:Number.isFinite(amount)?amount:0,average:Number.isFinite(average)?average:price})});
-  if(!all.length){const sinaSymbol=(etf.secid.startsWith("1.")?"sh":"sz")+etf.symbol,sinaResponse=await fetch("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol="+sinaSymbol+"&scale=1&ma=no&datalen=1023",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.sina.com.cn/","Accept":"application/json"}}),sina=await eastmoneyJson(sinaResponse,"ETF备用分时");(Array.isArray(sina)?sina:[]).forEach(function(row){const stamp=String(row.day||""),open=Number(row.open),price=Number(row.close),high=Number(row.high),low=Number(row.low),volume=Number(row.volume)/100,amount=Number(row.amount);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(stamp)&&Number.isFinite(price)&&price>0)all.push({stamp:stamp,open:open,price:price,high:high,low:low,volume:Number.isFinite(volume)?volume:0,amount:Number.isFinite(amount)?amount:0,average:volume&&amount?amount/(volume*100):price})});detailSource="新浪财经 ETF 历史分时（备用）"}
+  try{const existing=new Set(all.map(function(point){return point.stamp.slice(0,16)})),sinaSymbol=(etf.secid.startsWith("1.")?"sh":"sz")+etf.symbol,sinaResponse=await fetch("https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol="+sinaSymbol+"&scale=1&ma=no&datalen=1023",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.sina.com.cn/","Accept":"application/json"}}),sina=await eastmoneyJson(sinaResponse,"ETF备用分时");(Array.isArray(sina)?sina:[]).forEach(function(row){const stamp=String(row.day||""),key=stamp.slice(0,16),open=Number(row.open),price=Number(row.close),high=Number(row.high),low=Number(row.low),volume=Number(row.volume)/100,amount=Number(row.amount);if(!existing.has(key)&&/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(stamp)&&Number.isFinite(price)&&price>0){all.push({stamp:stamp,open:open,price:price,high:high,low:low,volume:Number.isFinite(volume)?volume:0,amount:Number.isFinite(amount)?amount:0,average:volume&&amount?amount/(volume*100):price});existing.add(key)}});if(!raw.length)detailSource="新浪财经 ETF 历史分时（备用）"}catch(error){if(!all.length)throw error}
+  all.sort(function(a,b){return a.stamp.localeCompare(b.stamp)});
   if(!all.length)throw new Error("最近交易日暂无有效分时数据");
-  const tradingDate=all[all.length-1].stamp.slice(0,10),dayPoints=all.filter(function(point){return point.stamp.slice(0,10)===tradingDate}),selected=period===1?dayPoints:dayPoints.reduce(function(rows,point){const time=point.stamp.slice(11,16).split(":"),bucket=Math.floor((Number(time[0])*60+Number(time[1]))/period),last=rows[rows.length-1];if(last&&last.bucket===bucket){last.stamp=point.stamp;last.price=point.price;last.high=Math.max(last.high,point.high);last.low=Math.min(last.low,point.low);last.volume+=point.volume;last.amount+=point.amount;last.average=last.volume?last.amount/(last.volume*100):point.average}else rows.push({...point,bucket:bucket});return rows},[]),today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-  return {symbol:etf.symbol,name:etf.name,index:etf.index,interval:period,labels:selected.map(function(point){return point.stamp.slice(0,16).replace(" ","T")+":00+08:00"}),points:selected.map(function(point){return point.price}),opens:selected.map(function(point){return point.open}),highs:selected.map(function(point){return point.high}),lows:selected.map(function(point){return point.low}),averages:selected.map(function(point){return point.average}),volumes:selected.map(function(point){return point.volume}),amounts:selected.map(function(point){return point.amount}),sessions:selected.map(function(){return "regular"}),source:detailSource,marketDate:tradingDate,marketTimeZone:"Asia/Shanghai",marketClosed:false,fallbackDate:tradingDate!==today,previousClose:Number(quote.f60)/1000||null,price:Number(quote.f43)/1000||selected[selected.length-1].price,change:Number(quote.f169)/1000||0,changePercent:Number(quote.f170)/100||0,currency:"CNY"};
+  const availableDates=[...new Set(all.map(function(point){return point.stamp.slice(0,10)}))].sort(),latestDate=availableDates[availableDates.length-1],tradingDate=requestedDate||latestDate;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(tradingDate)||!availableDates.includes(tradingDate))throw new Error("所选日期休市、暂无数据或超出可查询范围");
+  const dateIndex=availableDates.indexOf(tradingDate),priorDate=dateIndex>0?availableDates[dateIndex-1]:null,priorPoints=priorDate?all.filter(function(point){return point.stamp.slice(0,10)===priorDate}):[],historicalPreviousClose=priorPoints.length?priorPoints[priorPoints.length-1].price:null;
+  const dayPoints=all.filter(function(point){return point.stamp.slice(0,10)===tradingDate}),selected=period===1?dayPoints:dayPoints.reduce(function(rows,point){const time=point.stamp.slice(11,16).split(":"),bucket=Math.floor((Number(time[0])*60+Number(time[1]))/period),last=rows[rows.length-1];if(last&&last.bucket===bucket){last.stamp=point.stamp;last.price=point.price;last.high=Math.max(last.high,point.high);last.low=Math.min(last.low,point.low);last.volume+=point.volume;last.amount+=point.amount;last.average=last.volume?last.amount/(last.volume*100):point.average}else rows.push({...point,bucket:bucket});return rows},[]),today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  return {symbol:etf.symbol,name:etf.name,index:etf.index,interval:period,labels:selected.map(function(point){return point.stamp.slice(0,16).replace(" ","T")+":00+08:00"}),points:selected.map(function(point){return point.price}),opens:selected.map(function(point){return point.open}),highs:selected.map(function(point){return point.high}),lows:selected.map(function(point){return point.low}),averages:selected.map(function(point){return point.average}),volumes:selected.map(function(point){return point.volume}),amounts:selected.map(function(point){return point.amount}),sessions:selected.map(function(){return "regular"}),source:detailSource,marketDate:tradingDate,availableDates:availableDates,marketTimeZone:"Asia/Shanghai",marketClosed:false,fallbackDate:tradingDate!==today,previousClose:historicalPreviousClose||(tradingDate===latestDate?Number(quote.f60)/1000:null)||null,price:tradingDate===latestDate?Number(quote.f43)/1000||selected[selected.length-1].price:selected[selected.length-1].price,change:Number(quote.f169)/1000||0,changePercent:Number(quote.f170)/100||0,currency:"CNY"};
 }
 
 function csvCells(line){const cells=[];let value="",quoted=false;for(let i=0;i<line.length;i++){const char=line[i];if(char==='"'){if(quoted&&line[i+1]==='"'){value+='"';i++}else quoted=!quoted}else if(char===","&&!quoted){cells.push(value.trim());value=""}else value+=char}cells.push(value.trim());return cells}
@@ -241,15 +245,18 @@ async function getNaverQuote(symbol){
   return jsonResponse({item:item,updatedAt:new Date().toISOString(),source:"Naver Finance",subrequests:1},200);
 }
 
-async function getYahooTodayDetail(symbol){
-  const response=await fetch("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=1d&interval=5m&includePrePost=true",{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+async function getYahooTodayDetail(symbol,requestedDate){
+  const response=await fetch("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=5d&interval=5m&includePrePost=true",{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
   if(!response.ok)throw new Error("Yahoo HTTP "+response.status);
   const json=await response.json(),result=json.chart&&json.chart.result&&json.chart.result[0];
   if(!result)throw new Error("Yahoo empty response");
-  const timestamps=result.timestamp||[],quotes=result.indicators&&result.indicators.quote&&result.indicators.quote[0],closes=quotes&&quotes.close||[],today=marketDate(new Date(),"America/New_York"),labels=[],points=[],sessions=[];
-  timestamps.forEach(function(timestamp,index){const date=new Date(timestamp*1000),price=Number(closes[index]);if(marketDate(date,"America/New_York")===today&&Number.isFinite(price)){labels.push(date.toISOString());points.push(price);sessions.push(sessionForNewYork(date))}});
+  const timestamps=result.timestamp||[],quotes=result.indicators&&result.indicators.quote&&result.indicators.quote[0],closes=quotes&&quotes.close||[],rows=[];
+  timestamps.forEach(function(timestamp,index){const date=new Date(timestamp*1000),price=Number(closes[index]);if(Number.isFinite(price))rows.push({date:date,marketDate:marketDate(date,"America/New_York"),price:price})});
+  const availableDates=[...new Set(rows.map(function(row){return row.marketDate}))].sort(),selectedDate=requestedDate||availableDates[availableDates.length-1],labels=[],points=[],sessions=[];
+  if(!availableDates.includes(selectedDate))throw new Error("所选日期休市、暂无数据或超出可查询范围");
+  rows.forEach(function(row){if(row.marketDate===selectedDate){labels.push(row.date.toISOString());points.push(row.price);sessions.push(sessionForNewYork(row.date))}});
   const meta=result.meta||{};
-  return {symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Yahoo US intraday",marketDate:today,marketTimeZone:"America/New_York",marketClosed:points.length===0,marketStatus:meta.marketState||null,previousClose:Number(meta.chartPreviousClose||meta.previousClose)||null,pe:meta.trailingPE||null,marketCap:meta.marketCap||null};
+  return {symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Yahoo US intraday",marketDate:selectedDate,availableDates:availableDates,marketTimeZone:"America/New_York",marketClosed:points.length===0,marketStatus:meta.marketState||null,previousClose:Number(meta.chartPreviousClose||meta.previousClose)||null,pe:meta.trailingPE||null,marketCap:meta.marketCap||null};
 }
 
 async function resolveNaverWorld(symbol,market){
@@ -258,31 +265,37 @@ async function resolveNaverWorld(symbol,market){
   throw new Error("Naver World symbol unavailable");
 }
 
-async function getNaverWorldTodayDetail(symbol,info){
-  const resolved=await resolveNaverWorld(symbol,info[2]),code=resolved.code,basic=resolved.data,timeZone=info[2]==="US"?"America/New_York":"Asia/Tokyo",today=marketDate(new Date(),timeZone);
-  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=500",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
-  const labels=[],points=[],sessions=[];
-  if(response.ok){const json=await response.json(),rows=Array.isArray(json)?json:(json.result||json.priceInfos||[]);rows.forEach(function(row){const raw=row.localTradedAt||row.tradedAt||row.date||"",date=/^\d{12,14}$/.test(String(raw))?new Date(Date.UTC(Number(String(raw).slice(0,4)),Number(String(raw).slice(4,6))-1,Number(String(raw).slice(6,8)),Number(String(raw).slice(8,10))-(info[2]==="US"?0:9),Number(String(raw).slice(10,12)))):new Date(raw),price=naverNumber(row.closePrice||row.close||row.currentPrice);if(!Number.isNaN(date.getTime())&&marketDate(date,timeZone)===today&&Number.isFinite(price)&&price>0){labels.push(date.toISOString());points.push(price);sessions.push(info[2]==="US"?sessionForNewYork(date):"regular")}})}
-  if(info[2]==="US"&&basic.overMarketPriceInfo&&basic.overMarketPriceInfo.localTradedAt){const over=basic.overMarketPriceInfo,date=new Date(over.localTradedAt),price=naverNumber(over.overPrice);if(marketDate(date,timeZone)===today&&Number.isFinite(price)&&price>0){labels.push(date.toISOString());points.push(price);sessions.push(String(over.tradingSessionType||"").includes("PRE")?"pre":"after")}}
-  return {symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Naver World intraday",marketDate:today,marketTimeZone:timeZone,marketClosed:points.length===0,marketStatus:basic.marketStatus||basic.overMarketPriceInfo&&basic.overMarketPriceInfo.overMarketStatus||null,previousClose:naverNumber(naverFundamental(basic,["basePrice"])),pe:basic.per||naverFundamental(basic,["per"]),marketCap:basic.marketValue||naverFundamental(basic,["marketValue","marketCap"])};
+async function getNaverWorldTodayDetail(symbol,info,requestedDate){
+  const resolved=await resolveNaverWorld(symbol,info[2]),code=resolved.code,basic=resolved.data,timeZone=info[2]==="US"?"America/New_York":"Asia/Tokyo";
+  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=2000",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  const rows=[];
+  if(response.ok){const json=await response.json(),sourceRows=Array.isArray(json)?json:(json.result||json.priceInfos||[]);sourceRows.forEach(function(row){const raw=row.localTradedAt||row.tradedAt||row.date||"",date=/^\d{12,14}$/.test(String(raw))?new Date(Date.UTC(Number(String(raw).slice(0,4)),Number(String(raw).slice(4,6))-1,Number(String(raw).slice(6,8)),Number(String(raw).slice(8,10))-(info[2]==="US"?0:9),Number(String(raw).slice(10,12)))):new Date(raw),price=naverNumber(row.closePrice||row.close||row.currentPrice);if(!Number.isNaN(date.getTime())&&Number.isFinite(price)&&price>0)rows.push({date:date,marketDate:marketDate(date,timeZone),price:price,session:info[2]==="US"?sessionForNewYork(date):"regular"})})}
+  if(info[2]==="US"&&basic.overMarketPriceInfo&&basic.overMarketPriceInfo.localTradedAt){const over=basic.overMarketPriceInfo,date=new Date(over.localTradedAt),price=naverNumber(over.overPrice);if(!Number.isNaN(date.getTime())&&Number.isFinite(price)&&price>0)rows.push({date:date,marketDate:marketDate(date,timeZone),price:price,session:String(over.tradingSessionType||"").includes("PRE")?"pre":"after"})}
+  const availableDates=[...new Set(rows.map(function(row){return row.marketDate}))].sort(),selectedDate=requestedDate||availableDates[availableDates.length-1],labels=[],points=[],sessions=[];
+  if(!availableDates.includes(selectedDate))throw new Error("所选日期休市、暂无数据或超出可查询范围");
+  rows.forEach(function(row){if(row.marketDate===selectedDate){labels.push(row.date.toISOString());points.push(row.price);sessions.push(row.session)}});
+  return {symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Naver World intraday",marketDate:selectedDate,availableDates:availableDates,marketTimeZone:timeZone,marketClosed:points.length===0,marketStatus:basic.marketStatus||basic.overMarketPriceInfo&&basic.overMarketPriceInfo.overMarketStatus||null,previousClose:naverNumber(naverFundamental(basic,["basePrice"])),pe:basic.per||naverFundamental(basic,["per"]),marketCap:basic.marketValue||naverFundamental(basic,["marketValue","marketCap"])};
 }
 
-async function getTodayIntraday(symbol){
+async function getTodayIntraday(symbol,requestedDate){
   const info=inferredInfo(symbol);
   if(!info)return jsonResponse({error:"Unsupported symbol"},400);
   if(info[2]==="US"){
-    try{return jsonResponse(await getYahooTodayDetail(symbol),200)}catch(error){try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info),200)}catch(fallback){return jsonResponse({error:error.message+" / "+fallback.message,symbol:symbol},502)}}
+    try{return jsonResponse(await getYahooTodayDetail(symbol,requestedDate),200)}catch(error){try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info,requestedDate),200)}catch(fallback){return jsonResponse({error:error.message+" / "+fallback.message,symbol:symbol},502)}}
   }
   if(info[2]==="JP"){
-    try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info),200)}catch(error){return jsonResponse({error:error.message,symbol:symbol},502)}
+    try{return jsonResponse(await getNaverWorldTodayDetail(symbol,info,requestedDate),200)}catch(error){return jsonResponse({error:error.message,symbol:symbol},502)}
   }
   if(info[2]==="KR"&&info[3]==="stock"){
-    const code=symbol.replace(/\.(KS|KQ)$/,""),today=marketDate(new Date(),"Asia/Seoul"),response=await fetch("https://fchart.stock.naver.com/sise.nhn?symbol="+code+"&timeframe=minute&count=500&requestType=0",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/"}});
+    const code=symbol.replace(/\.(KS|KQ)$/,""),response=await fetch("https://fchart.stock.naver.com/sise.nhn?symbol="+code+"&timeframe=minute&count=2000&requestType=0",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://finance.naver.com/"}});
     if(!response.ok)return jsonResponse({error:"Naver chart HTTP "+response.status},502);
-    const xml=await response.text(),labels=[],points=[],sessions=[],pattern=/<item\s+data=["']([^"']+)["']/g;let match;
-    while((match=pattern.exec(xml))!==null){const fields=match[1].split("|"),stamp=fields[0],price=Number(fields[4]);if(String(stamp).slice(0,8)===today&&Number.isFinite(price)){labels.push(stamp);points.push(price);sessions.push("regular")}}
+    const xml=await response.text(),rows=[],pattern=/<item\s+data=["']([^"']+)["']/g;let match;
+    while((match=pattern.exec(xml))!==null){const fields=match[1].split("|"),stamp=fields[0],price=Number(fields[4]),day=String(stamp).slice(0,4)+"-"+String(stamp).slice(4,6)+"-"+String(stamp).slice(6,8);if(Number.isFinite(price))rows.push({stamp:stamp,price:price,day:day})}
+    const availableDates=[...new Set(rows.map(function(row){return row.day}))].sort(),selectedDate=requestedDate||availableDates[availableDates.length-1],labels=[],points=[],sessions=[];
+    if(!availableDates.includes(selectedDate))return jsonResponse({error:"所选日期休市、暂无数据或超出可查询范围",symbol:symbol},502);
+    rows.forEach(function(row){if(row.day===selectedDate){labels.push(row.stamp);points.push(row.price);sessions.push("regular")}});
     let pe=null,marketCap=null;try{const fundamentalResponse=await fetch("https://m.stock.naver.com/api/stock/"+code+"/integration",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});if(fundamentalResponse.ok){const fundamental=await fundamentalResponse.json();pe=fundamental.per||naverFundamental(fundamental,["per"]);marketCap=fundamental.marketValue||naverFundamental(fundamental,["marketValue","marketCap"])}}catch(error){}
-    return jsonResponse({symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Naver Korea intraday",marketDate:today,marketTimeZone:"Asia/Seoul",marketClosed:points.length===0,pe:pe,marketCap:marketCap},200);
+    return jsonResponse({symbol:symbol,labels:labels,points:points,sessions:sessions,source:"Naver Korea intraday",marketDate:selectedDate,availableDates:availableDates,marketTimeZone:"Asia/Seoul",marketClosed:points.length===0,pe:pe,marketCap:marketCap},200);
   }
   return jsonResponse({error:"该标的暂不支持当日分时",symbol:symbol},502);
 }
@@ -395,16 +408,16 @@ async function handleRequest(request){
     return jsonResponse({query:query,market:market,results:await searchStocks(query,market)},200);
   }
   if(url.pathname==="/api/china-etf-flow"){try{const symbol=(url.searchParams.get("symbol")||"").trim(),etf=symbol&&nationalTeamEtfs.find(function(item){return item.symbol===symbol});return jsonResponse(etf?{row:await getChinaEtfFlow(etf),updatedAt:new Date().toISOString()}:getChinaEtfFlows(),200)}catch(error){return jsonResponse({error:error.message||"ETF资金数据暂不可用"},502)}}
-  if(url.pathname==="/api/china-etf-detail"){try{return jsonResponse(await getChinaEtfDetail((url.searchParams.get("symbol")||"").trim(),url.searchParams.get("interval")),200)}catch(error){return jsonResponse({error:error.message||"ETF分时数据暂不可用"},502)}}
+  if(url.pathname==="/api/china-etf-detail"){try{return jsonResponse(await getChinaEtfDetail((url.searchParams.get("symbol")||"").trim(),url.searchParams.get("interval"),(url.searchParams.get("date")||"").trim()||null),200)}catch(error){return jsonResponse({error:error.message||"ETF分时数据暂不可用"},502)}}
   if(url.pathname==="/api/cffex-positions"){try{return jsonResponse(await getCffexPositions(),200)}catch(error){return jsonResponse({date:null,rows:[],error:error.message||"中金所排名暂不可用"},502)}}
   if(url.pathname==="/api/quote"){
     const symbol=(url.searchParams.get("symbol")||"").toUpperCase().trim();
-    if(url.searchParams.get("mode")==="detail")return getTodayIntraday(symbol);
+    if(url.searchParams.get("mode")==="detail")return getTodayIntraday(symbol,(url.searchParams.get("date")||"").trim()||null);
     const info=inferredInfo(symbol);
     if(info&&info[2]==="KR")return getNaverQuote(symbol);
     return getYahooQuote(symbol);
   }
-  if(url.pathname==="/api/detail")return getTodayIntraday((url.searchParams.get("symbol")||"").toUpperCase().trim());
+  if(url.pathname==="/api/detail")return getTodayIntraday((url.searchParams.get("symbol")||"").toUpperCase().trim(),(url.searchParams.get("date")||"").trim()||null);
   if(url.pathname==="/api/market")return market();
   return new Response("Not Found",{status:404,headers:{"content-type":"text/plain;charset=UTF-8"}});
 }
