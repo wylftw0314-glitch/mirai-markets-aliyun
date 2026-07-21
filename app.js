@@ -347,6 +347,12 @@ async function refreshQuotes(force=false){
 
 function compactCny(value){const number=Number(value)||0,absolute=Math.abs(number);if(absolute>=1e8)return (number/1e8).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 亿元';if(absolute>=1e4)return (number/1e4).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 万元';return number.toLocaleString('zh-CN')+' 元'}
 function signedNumber(value){const number=Number(value)||0;return (number>0?'+':'')+number.toLocaleString('zh-CN')}
+function billboardHTML(data){
+  if(data?.unavailable)return '<span class="billboard-empty">龙虎榜数据暂不可用</span>';
+  if(!data?.listed)return '<span class="billboard-empty">当日无龙虎榜披露</span>';
+  const side=(label,rows,className)=>`<div class="billboard-side ${className}"><b>${label}</b>${rows.length?rows.map(row=>`<span title="买入 ${compactCny(row.buy)} / 卖出 ${compactCny(row.sell)} / 净额 ${compactCny(row.net)}">${escapeHTML(row.name)} <em>${compactCny(row.amount)}</em></span>`).join(''):'<span>无公开席位</span>'}</div>`;
+  return `<div class="billboard-seats" title="${escapeHTML(data.reason||'交易公开信息')}">${side('买入',data.buys||[],'buy')}${side('卖出',data.sells||[],'sell')}</div>`;
+}
 
 async function loadChinaMonitor(){
   $('#etf-flow-updated').textContent='正在更新…';$('#cffex-updated').textContent='正在更新…';
@@ -356,9 +362,9 @@ async function loadChinaMonitor(){
   ]);
   if(etfResult.status==='fulfilled'){
     const data=etfResult.value,details=await Promise.all((data.rows||[]).map(row=>requestJSON('/api/china-etf-flow?symbol='+encodeURIComponent(row.symbol),'ETF资金').then(result=>result.row).catch(error=>({...row,available:false,error:error.message}))));state.chinaEtfs=details;$('#etf-flow-updated').textContent='更新 '+new Date(data.updatedAt).toLocaleString('zh-CN');
-    $('#etf-flow-body').innerHTML=state.chinaEtfs.map(row=>`<tr class="etf-row" data-etf-detail="${escapeHTML(row.symbol)}" tabindex="0" role="button"><td><strong>${escapeHTML(row.symbol)}</strong><small>${escapeHTML(row.name)}</small></td><td>${escapeHTML(row.index)}</td><td>${row.price==null?'—':Number(row.price).toFixed(3)}</td><td class="${row.changePercent>=0?'flow-in':'flow-out'}">${row.changePercent==null?'—':signedNumber(row.changePercent)+'%'}</td><td class="${row.mainNet>=0?'flow-in':'flow-out'}">${row.available?compactCny(row.mainNet):'暂无'}</td><td class="${row.mainRatio>=0?'flow-in':'flow-out'}">${row.available?signedNumber(row.mainRatio)+'%':'—'}</td><td>${escapeHTML(row.date||'—')}</td></tr>`).join('');
+    $('#etf-flow-body').innerHTML=state.chinaEtfs.map(row=>`<tr class="etf-row" data-etf-detail="${escapeHTML(row.symbol)}" tabindex="0" role="button"><td><strong>${escapeHTML(row.symbol)}</strong><small>${escapeHTML(row.name)}</small></td><td>${escapeHTML(row.index)}</td><td>${row.price==null?'—':Number(row.price).toFixed(3)}</td><td class="${row.changePercent>=0?'flow-in':'flow-out'}">${row.changePercent==null?'—':signedNumber(row.changePercent)+'%'}</td><td class="${row.mainNet>=0?'flow-in':'flow-out'}">${row.available?compactCny(row.mainNet):'暂无'}</td><td class="${row.mainRatio>=0?'flow-in':'flow-out'}">${row.available?signedNumber(row.mainRatio)+'%':'—'}</td><td class="billboard-cell">${billboardHTML(row.billboard)}</td><td>${escapeHTML(row.date||'—')}</td></tr>`).join('');
     $$('[data-etf-detail]').forEach(row=>{row.onclick=()=>openEtfDetail(row.dataset.etfDetail);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openEtfDetail(row.dataset.etfDetail)}}});
-  }else{$('#etf-flow-updated').textContent='更新失败';$('#etf-flow-body').innerHTML=`<tr><td colspan="7">${escapeHTML(etfResult.reason?.message||'ETF资金数据暂不可用')}</td></tr>`}
+  }else{$('#etf-flow-updated').textContent='更新失败';$('#etf-flow-body').innerHTML=`<tr><td colspan="8">${escapeHTML(etfResult.reason?.message||'ETF资金数据暂不可用')}</td></tr>`}
   if(cffexResult.status==='fulfilled'){
     const data=cffexResult.value;$('#cffex-updated').textContent=data.date?`交易日 ${data.date.slice(0,4)}-${data.date.slice(4,6)}-${data.date.slice(6,8)}`:'暂无收盘数据';
     $('#cffex-position-body').innerHTML=data.rows.length?data.rows.map(row=>`<tr><td><strong>${escapeHTML(row.institution)}</strong></td><td>${escapeHTML(row.products.join(' / '))}</td><td>${Number(row.long).toLocaleString('zh-CN')}</td><td class="${row.longChange>=0?'flow-in':'flow-out'}">${signedNumber(row.longChange)}</td><td>${Number(row.short).toLocaleString('zh-CN')}</td><td class="${row.shortChange<=0?'flow-in':'flow-out'}">${signedNumber(row.shortChange)}</td><td class="${row.net>=0?'flow-in':'flow-out'}">${signedNumber(row.net)}</td><td class="${row.netChange>=0?'flow-in':'flow-out'}">${signedNumber(row.netChange)}</td></tr>`).join(''):`<tr><td colspan="8">${escapeHTML(data.error||'该交易日未匹配到重点机构席位')}</td></tr>`;

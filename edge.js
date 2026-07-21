@@ -41,12 +41,27 @@ const nationalTeamEtfs=[
   {symbol:"510300",secid:"1.510300",name:"华泰柏瑞沪深300ETF",index:"沪深300"},{symbol:"510330",secid:"1.510330",name:"华夏沪深300ETF",index:"沪深300"},{symbol:"510310",secid:"1.510310",name:"易方达沪深300ETF",index:"沪深300"},{symbol:"159919",secid:"0.159919",name:"嘉实沪深300ETF",index:"沪深300"},{symbol:"510050",secid:"1.510050",name:"华夏上证50ETF",index:"上证50"},{symbol:"510500",secid:"1.510500",name:"南方中证500ETF",index:"中证500"},{symbol:"512100",secid:"1.512100",name:"南方中证1000ETF",index:"中证1000"},{symbol:"560010",secid:"1.560010",name:"广发中证1000ETF",index:"中证1000"}
 ];
 
+async function eastmoneyBillboardReport(report,symbol,date,sortColumn){
+  const filter="(TRADE_DATE='"+date+"')(SECURITY_CODE=\""+symbol+"\")",url="https://datacenter-web.eastmoney.com/api/data/v1/get?reportName="+report+"&columns=ALL&pageSize=20&pageNumber=1&source=WEB&client=WEB&sortColumns="+sortColumn+"&sortTypes=-1&filter="+encodeURIComponent(filter),response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://data.eastmoney.com/","Accept":"application/json"}}),json=await eastmoneyJson(response,"龙虎榜");
+  return json&&json.result&&json.result.data||[];
+}
+
+async function getEtfBillboard(symbol,date){
+  if(!date)return {listed:false,date:null,buys:[],sells:[]};
+  const summary=await eastmoneyBillboardReport("RPT_DAILYBILLBOARD_DETAILS",symbol,date,"TRADE_DATE");
+  if(!summary.length)return {listed:false,date:date,buys:[],sells:[]};
+  const details=await Promise.all([eastmoneyBillboardReport("RPT_BILLBOARD_DAILYDETAILSBUY",symbol,date,"BUY"),eastmoneyBillboardReport("RPT_BILLBOARD_DAILYDETAILSSELL",symbol,date,"SELL")]);
+  const normalize=function(rows,side){const seen=new Set();return rows.filter(function(row){const name=String(row.OPERATEDEPT_NAME||"").trim();if(!name||seen.has(name))return false;seen.add(name);return true}).slice(0,5).map(function(row){return {name:String(row.OPERATEDEPT_NAME),buy:Number(row.BUY)||0,sell:Number(row.SELL)||0,net:Number(row.NET)||0,amount:Number(row[side])||0}})};
+  return {listed:true,date:date,reason:summary[0].EXPLANATION||summary[0].EXPLAIN||"交易公开信息",buyTotal:Number(summary[0].BILLBOARD_BUY_AMT)||0,sellTotal:Number(summary[0].BILLBOARD_SELL_AMT)||0,netTotal:Number(summary[0].BILLBOARD_NET_AMT)||0,buys:normalize(details[0],"BUY"),sells:normalize(details[1],"SELL")};
+}
+
 async function getChinaEtfFlow(etf){
   const responses=await Promise.all([
     fetch("https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid="+etf.secid+"&lmt=1&klt=101&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/"}}),
     fetch("https://push2.eastmoney.com/api/qt/stock/get?secid="+etf.secid+"&fields=f43,f57,f58,f170",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/"}})
-  ]),flow=await eastmoneyJson(responses[0],"ETF资金"),quote=await eastmoneyJson(responses[1],"ETF行情"),line=flow&&flow.data&&flow.data.klines&&flow.data.klines[0]?flow.data.klines[0].split(","):[];
-  return {...etf,date:line[0]||null,mainNet:Number(line[1])||0,mainRatio:Number(line[6])||0,price:quote&&quote.data?Number(quote.data.f43)/1000:null,changePercent:quote&&quote.data?Number(quote.data.f170)/100:null,available:Boolean(line.length)};
+  ]),flow=await eastmoneyJson(responses[0],"ETF资金"),quote=await eastmoneyJson(responses[1],"ETF行情"),line=flow&&flow.data&&flow.data.klines&&flow.data.klines[0]?flow.data.klines[0].split(","):[],date=line[0]||null;let billboard;
+  try{billboard=await getEtfBillboard(etf.symbol,date)}catch(error){billboard={listed:false,date:date,buys:[],sells:[],unavailable:true,error:error.message}}
+  return {...etf,date:date,mainNet:Number(line[1])||0,mainRatio:Number(line[6])||0,price:quote&&quote.data?Number(quote.data.f43)/1000:null,changePercent:quote&&quote.data?Number(quote.data.f170)/100:null,available:Boolean(line.length),billboard:billboard};
 }
 
 function getChinaEtfFlows(){
