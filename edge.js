@@ -62,7 +62,7 @@ async function getChinaEtfDetail(symbol,interval){
   const etf=nationalTeamEtfs.find(function(item){return item.symbol===symbol});
   if(!etf)throw new Error("不支持的宽基ETF代码");
   const allowed=[1,5,15,30,60],period=allowed.includes(Number(interval))?Number(interval):1;
-  const base="https://push2his.eastmoney.com/api/qt/stock/",chartUrl=period===1
+  const base="https://push2.eastmoney.com/api/qt/stock/",chartUrl=period===1
     ?base+"trends2/get?secid="+etf.secid+"&ndays=5&iscr=0&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
     :base+"kline/get?secid="+etf.secid+"&klt="+period+"&fqt=1&lmt=1000&end=20500101&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61";
   const quoteUrl="https://push2.eastmoney.com/api/qt/stock/get?secid="+etf.secid+"&fields=f43,f57,f58,f60,f169,f170";
