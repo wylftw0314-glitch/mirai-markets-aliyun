@@ -128,9 +128,25 @@ function fullChart(points,labels=[],currency='KRW',reference=null,sessions=[]){
   return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="当日价格走势，相对昨收零轴">${zero}<path class="chart-base" d="M${pad},${h-pad}H${w-pad}"/><path class="chart-area" d="${area}"/>${lines}${hits}</svg>`;
 }
 
+function emaSeries(values,period){let previous=null,multiplier=2/(period+1);return values.map(value=>{previous=previous==null?Number(value):Number(value)*multiplier+previous*(1-multiplier);return previous})}
+function macdSeries(values){const fast=emaSeries(values,12),slow=emaSeries(values,26),dif=values.map((_,index)=>fast[index]-slow[index]),dea=emaSeries(dif,9),hist=dif.map((value,index)=>(value-dea[index])*2);return {dif,dea,hist}}
+function formatVolume(value){const number=Number(value)||0;if(number>=1e8)return (number/1e8).toFixed(2)+' 亿手';if(number>=1e4)return (number/1e4).toFixed(2)+' 万手';return number.toLocaleString('zh-CN')+' 手'}
+
+function technicalChart(data,currency='CNY'){
+  const points=data.points||[],labels=data.labels||[],volumes=data.volumes||[],amounts=data.amounts||[];
+  if(points.length<2)return '<p>最近交易日还没有足够的技术指标点位。</p>';
+  const w=820,h=520,pad=30,priceTop=22,priceBottom=252,volumeTop=292,volumeBottom=370,macdTop=410,macdBottom=498,base=Number(data.previousClose),hasBase=Number.isFinite(base)&&base>0,scalePoints=hasBase?[...points,base]:points,min=Math.min(...scalePoints),max=Math.max(...scalePoints),range=max-min||1,x=index=>pad+(index/Math.max(1,points.length-1))*(w-pad*2),priceY=value=>priceBottom-((value-min)/range)*(priceBottom-priceTop),coords=points.map((value,index)=>[x(index),priceY(value)]),line=coords.map((point,index)=>`${index?'L':'M'}${point[0].toFixed(1)},${point[1].toFixed(1)}`).join(' '),area=line+` L${x(points.length-1)},${priceBottom} L${pad},${priceBottom} Z`,barWidth=Math.max(1,Math.min(10,(w-pad*2)/points.length*.7)),volumeMax=Math.max(...volumes,1),amountMax=Math.max(...amounts,1),volumeY=value=>volumeBottom-(Number(value||0)/volumeMax)*(volumeBottom-volumeTop),amountY=value=>volumeBottom-(Number(value||0)/amountMax)*(volumeBottom-volumeTop),amountLine=amounts.map((value,index)=>`${index?'L':'M'}${x(index).toFixed(1)},${amountY(value).toFixed(1)}`).join(' '),macd=macdSeries(points),macdMax=Math.max(...macd.dif.map(Math.abs),...macd.dea.map(Math.abs),...macd.hist.map(Math.abs),.000001),macdZero=(macdTop+macdBottom)/2,macdY=value=>macdZero-(value/macdMax)*(macdBottom-macdTop)/2,difLine=macd.dif.map((value,index)=>`${index?'L':'M'}${x(index).toFixed(1)},${macdY(value).toFixed(1)}`).join(' '),deaLine=macd.dea.map((value,index)=>`${index?'L':'M'}${x(index).toFixed(1)},${macdY(value).toFixed(1)}`).join(' ');
+  const volumeBars=volumes.map((value,index)=>{const y=volumeY(value),positive=index?points[index]>=points[index-1]:points[index]>=base;return `<rect class="volume-bar ${positive?'up':'down'}" x="${(x(index)-barWidth/2).toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1,volumeBottom-y).toFixed(1)}"/>`}).join('');
+  const macdBars=macd.hist.map((value,index)=>{const y=macdY(value),top=Math.min(y,macdZero),height=Math.max(1,Math.abs(y-macdZero));return `<rect class="macd-bar ${value>=0?'up':'down'}" x="${(x(index)-barWidth/2).toFixed(1)}" y="${top.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}"/>`}).join('');
+  const hits=coords.map((point,index)=>{const label=labels[index]?pointTime(labels[index]):'点位 '+(index+1);return `<circle class="chart-hit technical-hit" tabindex="0" cx="${point[0].toFixed(1)}" cy="${point[1].toFixed(1)}" r="4" data-label="${escapeHTML(label)}" data-session="regular" data-value="${points[index]}" data-currency="${currency}" data-volume="${Number(volumes[index]||0)}" data-amount="${Number(amounts[index]||0)}" data-dif="${macd.dif[index].toFixed(4)}" data-dea="${macd.dea[index].toFixed(4)}" data-macd="${macd.hist[index].toFixed(4)}"><title>${escapeHTML(label)} · ${points[index]}</title></circle>`}).join('');
+  const tickIndexes=[0,Math.floor((points.length-1)/2),points.length-1],timeTicks=tickIndexes.map((index,position)=>{const date=new Date(labels[index]),text=Number.isNaN(date.getTime())?String(labels[index]||'').slice(11,16):date.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),anchor=position===0?'start':position===2?'end':'middle';return `<text class="time-tick" x="${x(index).toFixed(1)}" y="517" text-anchor="${anchor}">${escapeHTML(text)}</text>`}).join('');
+  const zero=hasBase?`<path class="chart-zero" d="M${pad},${priceY(base).toFixed(1)}H${w-pad}"/><text class="chart-zero-label" x="${w-pad}" y="${Math.max(13,priceY(base)-5).toFixed(1)}" text-anchor="end">0% · 昨收</text>`:'';
+  return `<svg class="technical-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="价格、成交量、成交额与MACD联动图">${zero}<text class="panel-label" x="${pad}" y="14">价格</text><path class="chart-area" d="${area}"/><path class="chart-line session-regular" d="${line}"/>${hits}<path class="panel-divider" d="M${pad},274H${w-pad}"/><text class="panel-label" x="${pad}" y="286">成交量</text><text class="panel-label amount" x="${pad+58}" y="286">成交额</text>${volumeBars}<path class="amount-line" d="${amountLine}"/><path class="panel-divider" d="M${pad},392H${w-pad}"/><text class="panel-label" x="${pad}" y="405">MACD (12,26,9)</text>${macdBars}<path class="macd-zero" d="M${pad},${macdZero}H${w-pad}"/><path class="dif-line" d="${difLine}"/><path class="dea-line" d="${deaLine}"/><text class="macd-legend dif" x="${w-150}" y="405">DIF</text><text class="macd-legend dea" x="${w-105}" y="405">DEA</text><text class="macd-legend hist" x="${w-58}" y="405">柱</text>${timeTicks}</svg>`;
+}
+
 function wireChartPoints(){
   const names={pre:'盘前',regular:'盘中',after:'盘后',closed:'非交易时段'};
-  $$('.chart-hit').forEach(point=>{const show=()=>{$('#detail-point').textContent=`${point.dataset.label} · ${names[point.dataset.session]||''} · ${money(Number(point.dataset.value),point.dataset.currency)}`};point.onmouseenter=show;point.onclick=show;point.onfocus=show});
+  $$('.chart-hit').forEach(point=>{const show=()=>{const technical=point.dataset.volume!=null?` · 成交量 ${formatVolume(point.dataset.volume)} · 成交额 ${compactCny(point.dataset.amount)} · DIF ${point.dataset.dif} · DEA ${point.dataset.dea} · MACD ${point.dataset.macd}`:'';$('#detail-point').textContent=`${point.dataset.label} · ${names[point.dataset.session]||''} · ${money(Number(point.dataset.value),point.dataset.currency)}${technical}`};point.onmouseenter=show;point.onclick=show;point.onfocus=show});
 }
 
 function parseDetailPayload(text){
@@ -199,8 +215,8 @@ async function loadEtfChart(interval){
     $('#market-closed').hidden=!fallback;
     $('#market-closed').className='market-alert'+(fallback?' notice':'');
     $('#market-closed').textContent=fallback?`当前为非交易日或尚未开盘，展示最近交易日 ${data.marketDate} 的完整数据。`:'';
-    $('#detail-chart').innerHTML=fullChart(data.points,data.labels,'CNY',data.previousClose||null,data.sessions||[]);
-    $('#detail-source').textContent=`${data.source} · ${interval}分钟 · ${data.points.length} 个点位`;
+    $('#detail-chart').innerHTML=technicalChart(data,'CNY');
+    $('#detail-source').textContent=`${data.source} · ${interval}分钟 · ${data.points.length} 个点位 · MACD(12,26,9)`;
     $('#detail-date-note').textContent=`交易日 ${data.marketDate} · 北京时间`;
     wireChartPoints();
   }catch(error){
