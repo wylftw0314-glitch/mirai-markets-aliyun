@@ -247,7 +247,7 @@ async function getNaverQuote(symbol){
 }
 
 async function getYahooTodayDetail(symbol,requestedDate){
-  const response=await fetch("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=5d&interval=5m&includePrePost=true",{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
+  const response=await fetch("https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=5d&interval=15m&includePrePost=true",{headers:{"User-Agent":"Mozilla/5.0","Accept":"application/json"}});
   if(!response.ok)throw new Error("Yahoo HTTP "+response.status);
   const json=await response.json(),result=json.chart&&json.chart.result&&json.chart.result[0];
   if(!result)throw new Error("Yahoo empty response");
@@ -268,7 +268,7 @@ async function resolveNaverWorld(symbol,market){
 
 async function getNaverWorldTodayDetail(symbol,info,requestedDate){
   const resolved=await resolveNaverWorld(symbol,info[2]),code=resolved.code,basic=resolved.data,timeZone=info[2]==="US"?"America/New_York":"Asia/Tokyo";
-  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=1000",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+  const response=await fetch("https://api.stock.naver.com/chart/foreign/item/"+encodeURIComponent(code)+"?periodType=minute&count=500",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
   const rows=[];
   if(response.ok){const json=await response.json(),sourceRows=Array.isArray(json)?json:(json.result||json.priceInfos||[]);sourceRows.forEach(function(row){const raw=row.localTradedAt||row.tradedAt||row.date||"",date=/^\d{12,14}$/.test(String(raw))?new Date(Date.UTC(Number(String(raw).slice(0,4)),Number(String(raw).slice(4,6))-1,Number(String(raw).slice(6,8)),Number(String(raw).slice(8,10))-(info[2]==="US"?0:9),Number(String(raw).slice(10,12)))):new Date(raw),price=naverNumber(row.closePrice||row.close||row.currentPrice);if(!Number.isNaN(date.getTime())&&Number.isFinite(price)&&price>0)rows.push({date:date,marketDate:marketDate(date,timeZone),price:price,session:info[2]==="US"?sessionForNewYork(date):"regular"})})}
   if(info[2]==="US"&&basic.overMarketPriceInfo&&basic.overMarketPriceInfo.localTradedAt){const over=basic.overMarketPriceInfo,date=new Date(over.localTradedAt),price=naverNumber(over.overPrice);if(!Number.isNaN(date.getTime())&&Number.isFinite(price)&&price>0)rows.push({date:date,marketDate:marketDate(date,timeZone),price:price,session:String(over.tradingSessionType||"").includes("PRE")?"pre":"after"})}
