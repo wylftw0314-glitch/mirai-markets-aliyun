@@ -41,14 +41,16 @@ const nationalTeamEtfs=[
   {symbol:"510300",secid:"1.510300",name:"华泰柏瑞沪深300ETF",index:"沪深300"},{symbol:"510330",secid:"1.510330",name:"华夏沪深300ETF",index:"沪深300"},{symbol:"510310",secid:"1.510310",name:"易方达沪深300ETF",index:"沪深300"},{symbol:"159919",secid:"0.159919",name:"嘉实沪深300ETF",index:"沪深300"},{symbol:"510050",secid:"1.510050",name:"华夏上证50ETF",index:"上证50"},{symbol:"510500",secid:"1.510500",name:"南方中证500ETF",index:"中证500"},{symbol:"512100",secid:"1.512100",name:"南方中证1000ETF",index:"中证1000"},{symbol:"560010",secid:"1.560010",name:"广发中证1000ETF",index:"中证1000"}
 ];
 
-async function getChinaEtfFlows(){
-  const rows=await Promise.all(nationalTeamEtfs.map(async etf=>{
-    try{const [flowResponse,quoteResponse]=await Promise.all([
-      fetch("https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid="+etf.secid+"&lmt=1&klt=101&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/"}}),
-      fetch("https://push2.eastmoney.com/api/qt/stock/get?secid="+etf.secid+"&fields=f43,f57,f58,f170",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/"}})
-    ]);const flow=flowResponse.ok?await flowResponse.json():null,quote=quoteResponse.ok?await quoteResponse.json():null,line=flow&&flow.data&&flow.data.klines&&flow.data.klines[0]?flow.data.klines[0].split(","):[];return {...etf,date:line[0]||null,mainNet:Number(line[1])||0,mainRatio:Number(line[6])||0,price:quote&&quote.data?Number(quote.data.f43)/1000:null,changePercent:quote&&quote.data?Number(quote.data.f170)/100:null,available:Boolean(line.length)}}catch(error){return {...etf,available:false,error:error.message}}
-  }));
-  return {rows:rows,updatedAt:new Date().toISOString(),source:"东方财富 ETF 主力资金流",basis:"公开基金定期报告重点持有人观察池；资金字段为二级市场主力交易资金口径，不等于ETF净申购"};
+async function getChinaEtfFlow(etf){
+  const responses=await Promise.all([
+    fetch("https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid="+etf.secid+"&lmt=1&klt=101&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/"}}),
+    fetch("https://push2.eastmoney.com/api/qt/stock/get?secid="+etf.secid+"&fields=f43,f57,f58,f170",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/"}})
+  ]),flow=await eastmoneyJson(responses[0],"ETF资金"),quote=await eastmoneyJson(responses[1],"ETF行情"),line=flow&&flow.data&&flow.data.klines&&flow.data.klines[0]?flow.data.klines[0].split(","):[];
+  return {...etf,date:line[0]||null,mainNet:Number(line[1])||0,mainRatio:Number(line[6])||0,price:quote&&quote.data?Number(quote.data.f43)/1000:null,changePercent:quote&&quote.data?Number(quote.data.f170)/100:null,available:Boolean(line.length)};
+}
+
+function getChinaEtfFlows(){
+  return {rows:nationalTeamEtfs,updatedAt:new Date().toISOString(),source:"东方财富 ETF 主力资金流",basis:"公开基金定期报告重点持有人观察池；资金字段为二级市场主力交易资金口径，不等于ETF净申购"};
 }
 
 function eastmoneyJson(response,label){
@@ -79,7 +81,8 @@ function numberCell(value){const number=Number(String(value||"").replace(/,/g,""
 function cffexDate(date){return date.getUTCFullYear().toString()+String(date.getUTCMonth()+1).padStart(2,"0")+String(date.getUTCDate()).padStart(2,"0")}
 
 async function fetchCffexCsv(product,date){
-  const ymd=cffexDate(date),url="https://www.cffex.com.cn/sj/ccpm/"+ymd.slice(0,6)+"/"+ymd.slice(6)+"/"+product+"_1.csv",response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://www.cffex.com.cn/"}});
+  const ymd=cffexDate(date),url="https://www.cffex.com.cn/sj/ccpm/"+ymd.slice(0,6)+"/"+ymd.slice(6)+"/"+product+"_1.csv",controller=new AbortController(),timer=setTimeout(function(){controller.abort()},2200);let response;
+  try{response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://www.cffex.com.cn/"},signal:controller.signal})}finally{clearTimeout(timer)}
   if(!response.ok)throw new Error("HTTP "+response.status);
   const buffer=await response.arrayBuffer(),utf8=new TextDecoder("utf-8").decode(buffer);let text=utf8;
   if(utf8.includes("�")||(!utf8.includes("会员")&&!utf8.includes("持买")&&!utf8.includes("持卖"))){try{const gb=new TextDecoder("gb18030").decode(buffer);if(!gb.includes("�"))text=gb}catch(error){}}
@@ -94,9 +97,9 @@ function parseCffexRankings(product,text,store){
 }
 
 async function getCffexPositions(){
-  const products=["IF","IH","IC","IM"],focus=/中信|国泰君安|华泰|中金|银河|永安|东证|招商|广发|申万|海通/;
-  for(let offset=0;offset<10;offset++){const date=new Date(Date.now()-offset*86400000);if([0,6].includes(date.getUTCDay()))continue;const results=await Promise.allSettled(products.map(product=>fetchCffexCsv(product,date)));if(!results.some(result=>result.status==="fulfilled"))continue;const store={};let actualDate=null;results.forEach((result,index)=>{if(result.status==="fulfilled"){actualDate=result.value.date;parseCffexRankings(products[index],result.value.text,store)}});const rows=Object.values(store).filter(row=>focus.test(row.institution)).map(row=>({...row,products:[...row.products],net:row.long-row.short,netChange:row.longChange-row.shortChange})).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net));return {date:actualDate,rows:rows,source:"中国金融期货交易所成交持仓排名",basis:"期货公司结算会员席位汇总，不代表期货公司自营或单一客户观点"}}
-  return {date:null,rows:[],source:"中国金融期货交易所成交持仓排名",error:"最近10天未取得收盘排名数据"};
+  const products=["IF","IH","IC","IM"],focus=/中信|国泰君安|华泰|中金|银河|永安|东证|招商|广发|申万|海通/,hour=Number(new Intl.DateTimeFormat("en-US",{timeZone:"Asia/Shanghai",hour:"2-digit",hour12:false}).format(new Date())),startOffset=hour>=17?0:1;let attempts=0;
+  for(let offset=startOffset;offset<7&&attempts<2;offset++){const date=new Date(Date.now()-offset*86400000);if([0,6].includes(date.getUTCDay()))continue;attempts++;const results=await Promise.allSettled(products.map(product=>fetchCffexCsv(product,date)));if(!results.some(result=>result.status==="fulfilled"))continue;const store={};let actualDate=null;results.forEach((result,index)=>{if(result.status==="fulfilled"){actualDate=result.value.date;parseCffexRankings(products[index],result.value.text,store)}});const rows=Object.values(store).filter(row=>focus.test(row.institution)).map(row=>({...row,products:[...row.products],net:row.long-row.short,netChange:row.longChange-row.shortChange})).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net));return {date:actualDate,rows:rows,source:"中国金融期货交易所成交持仓排名",basis:"期货公司结算会员席位汇总，不代表期货公司自营或单一客户观点"}}
+  return {date:null,rows:[],source:"中国金融期货交易所成交持仓排名",error:"最近已收盘交易日未取得排名数据，请稍后刷新"};
 }
 
 function marketFromYahoo(symbol,exchange){
@@ -377,7 +380,7 @@ async function handleRequest(request){
     if(!["ALL","US","JP","KR"].includes(market))return jsonResponse({error:"不支持的市场"},400);
     return jsonResponse({query:query,market:market,results:await searchStocks(query,market)},200);
   }
-  if(url.pathname==="/api/china-etf-flow"){try{return jsonResponse(await getChinaEtfFlows(),200)}catch(error){return jsonResponse({error:error.message||"ETF资金数据暂不可用"},502)}}
+  if(url.pathname==="/api/china-etf-flow"){try{const symbol=(url.searchParams.get("symbol")||"").trim(),etf=symbol&&nationalTeamEtfs.find(function(item){return item.symbol===symbol});return jsonResponse(etf?{row:await getChinaEtfFlow(etf),updatedAt:new Date().toISOString()}:getChinaEtfFlows(),200)}catch(error){return jsonResponse({error:error.message||"ETF资金数据暂不可用"},502)}}
   if(url.pathname==="/api/china-etf-detail"){try{return jsonResponse(await getChinaEtfDetail((url.searchParams.get("symbol")||"").trim(),url.searchParams.get("interval")),200)}catch(error){return jsonResponse({error:error.message||"ETF分时数据暂不可用"},502)}}
   if(url.pathname==="/api/cffex-positions"){try{return jsonResponse(await getCffexPositions(),200)}catch(error){return jsonResponse({date:null,rows:[],error:error.message||"中金所排名暂不可用"},502)}}
   if(url.pathname==="/api/quote"){

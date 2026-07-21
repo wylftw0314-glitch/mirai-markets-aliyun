@@ -182,7 +182,7 @@ async function openDetail(symbol){
 
 async function requestJSON(url,label){
   const response=await fetch(url,{headers:{Accept:'application/json'}}),text=await response.text(),type=(response.headers.get('content-type')||'').toLowerCase();
-  if(!type.includes('application/json'))throw Error(label+'接口路由尚未生效，请确认边缘函数已发布');
+  if(!type.includes('application/json'))throw Error(label+'服务暂时返回了网页错误，请稍后刷新');
   let data;try{data=JSON.parse(text)}catch(error){throw Error(label+'接口返回了无法识别的内容')}
   if(!response.ok)throw Error(data.error||label+'接口不可用');
   return data;
@@ -355,7 +355,7 @@ async function loadChinaMonitor(){
     requestJSON('/api/cffex-positions','中金所')
   ]);
   if(etfResult.status==='fulfilled'){
-    const data=etfResult.value;state.chinaEtfs=data.rows||[];$('#etf-flow-updated').textContent='更新 '+new Date(data.updatedAt).toLocaleString('zh-CN');
+    const data=etfResult.value,details=await Promise.all((data.rows||[]).map(row=>requestJSON('/api/china-etf-flow?symbol='+encodeURIComponent(row.symbol),'ETF资金').then(result=>result.row).catch(error=>({...row,available:false,error:error.message}))));state.chinaEtfs=details;$('#etf-flow-updated').textContent='更新 '+new Date(data.updatedAt).toLocaleString('zh-CN');
     $('#etf-flow-body').innerHTML=state.chinaEtfs.map(row=>`<tr class="etf-row" data-etf-detail="${escapeHTML(row.symbol)}" tabindex="0" role="button"><td><strong>${escapeHTML(row.symbol)}</strong><small>${escapeHTML(row.name)}</small></td><td>${escapeHTML(row.index)}</td><td>${row.price==null?'—':Number(row.price).toFixed(3)}</td><td class="${row.changePercent>=0?'flow-in':'flow-out'}">${row.changePercent==null?'—':signedNumber(row.changePercent)+'%'}</td><td class="${row.mainNet>=0?'flow-in':'flow-out'}">${row.available?compactCny(row.mainNet):'暂无'}</td><td class="${row.mainRatio>=0?'flow-in':'flow-out'}">${row.available?signedNumber(row.mainRatio)+'%':'—'}</td><td>${escapeHTML(row.date||'—')}</td></tr>`).join('');
     $$('[data-etf-detail]').forEach(row=>{row.onclick=()=>openEtfDetail(row.dataset.etfDetail);row.onkeydown=event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openEtfDetail(row.dataset.etfDetail)}}});
   }else{$('#etf-flow-updated').textContent='更新失败';$('#etf-flow-body').innerHTML=`<tr><td colspan="7">${escapeHTML(etfResult.reason?.message||'ETF资金数据暂不可用')}</td></tr>`}
