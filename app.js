@@ -423,7 +423,7 @@ async function loadChinaFlowSpeed(){
     $('#flow-radar-net').textContent=(data.net>=0?'+':'-')+compactCny(Math.abs(data.net));
     $('#flow-radar-speed').textContent=(speed>=0?'+':'-')+compactCny(Math.abs(speed))+'/分钟';
     $('#flow-radar-speed').className=incoming?'flow-in':'flow-out';$('#flow-radar-status').className=data.accelerating?(incoming?'flow-in':'flow-out'):'';$('#flow-radar-status').textContent=status;
-    $('#flow-radar-time').textContent=`交易日 ${data.marketDate||'—'} · 更新 ${data.updatedAt?data.updatedAt.slice(11):'—'} · 60秒自动监测`;
+    $('#flow-radar-time').textContent=`交易日 ${data.marketDate||'—'} · 更新 ${data.updatedAt?data.updatedAt.slice(11):'—'} · ${(data.coverage||['沪市','深市']).join('+')}${data.partial?'（部分）':''} · 60秒自动监测`;
     $('#flow-radar-chart').innerHTML=flowSpeedChart(data.points);
     const now=Date.now(),alertKey=data.updatedAt+'-'+data.direction,cooldown=!state.lastFlowAlert||now-state.lastFlowAlert.time>=300000;
     if(state.flowInitialized&&data.accelerating&&alertKey!==state.lastFlowAlert?.key&&cooldown){showFlowAlert(data);state.lastFlowAlert={key:alertKey,time:now}}
