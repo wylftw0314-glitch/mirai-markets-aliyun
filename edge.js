@@ -68,15 +68,37 @@ function getChinaEtfFlows(){
   return {rows:nationalTeamEtfs,updatedAt:new Date().toISOString(),source:"东方财富 ETF 主力资金流",basis:"公开基金定期报告重点持有人观察池；资金字段为二级市场主力交易资金口径，不等于ETF净申购"};
 }
 
-async function getChinaFlowSpeed(){
+async function edgeCacheGet(key){try{if(typeof cache!=="undefined"){const response=await cache.get("http://mirai-cache.local/"+key);if(response)return response.json()}}catch(error){}return null}
+async function edgeCachePut(key,value,ttl){try{if(typeof cache!=="undefined")await cache.put("http://mirai-cache.local/"+key,new Response(JSON.stringify(value),{headers:{"content-type":"application/json","cache-control":"max-age="+ttl}}))}catch(error){}}
+async function edgeStoreGet(key){try{if(typeof EdgeKV!=="undefined"){const store=new EdgeKV({namespace:"mirai_markets"}),value=await store.get(key,{type:"json"});if(value!==undefined)return value}}catch(error){}return edgeCacheGet(key)}
+async function edgeStorePut(key,value){try{if(typeof EdgeKV!=="undefined"){const store=new EdgeKV({namespace:"mirai_markets"});await store.put(key,JSON.stringify(value))}}catch(error){}await edgeCachePut(key,value,604800)}
+
+async function fetchChinaIndexCurves(requestedDate){
+  const indexes=[{id:"sh",name:"上证指数",secid:"1.000001"},{id:"sz",name:"深证成指",secid:"0.399001"},{id:"cyb",name:"创业板指",secid:"0.399006"},{id:"star50",name:"科创50",secid:"1.000688"}],headers={"User-Agent":"Mozilla/5.0","Referer":"https://quote.eastmoney.com/","Accept":"application/json"};
+  const results=await Promise.allSettled(indexes.map(async function(index){const url="https://push2.eastmoney.com/api/qt/stock/trends2/get?secid="+index.secid+"&ndays=5&iscr=0&fields1=f1,f2,f3&fields2=f51,f52,f53",response=await fetch(url,{headers:headers}),json=await eastmoneyJson(response,index.name);return {...index,rows:json&&json.data&&json.data.trends||[]}})),curves=[],dates=new Set();
+  results.filter(function(result){return result.status==="fulfilled"}).forEach(function(result){const index=result.value,all=index.rows.map(function(line){const cells=String(line).split(","),time=cells[0],value=Number(cells[2]);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}/.test(time)&&Number.isFinite(value)){dates.add(time.slice(0,10));return {time:time.slice(0,16),value:value}}return null}).filter(Boolean),date=requestedDate||all.length&&all[all.length-1].time.slice(0,10),points=all.filter(function(point){return point.time.slice(0,10)===date});if(points.length)curves.push({id:index.id,name:index.name,points:points})});
+  return {curves:curves,availableDates:[...dates].sort()};
+}
+
+async function fetchChinaFlowCurrent(){
   const markets=[{secid:"1.000001",name:"沪市"},{secid:"0.399001",name:"深市"}],headers={"User-Agent":"Mozilla/5.0","Referer":"https://data.eastmoney.com/","Accept":"application/json"};
   const attempts=await Promise.allSettled(markets.map(async function(market){const path="/api/qt/stock/fflow/kline/get?secid="+market.secid+"&lmt=0&klt=1&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55",hosts=["https://push2.eastmoney.com","https://push2his.eastmoney.com"];let lastError;for(let i=0;i<hosts.length;i++){try{const response=await fetch(hosts[i]+path,{headers:headers}),json=await eastmoneyJson(response,market.name+"主力资金");return {name:market.name,rows:json&&json.data&&json.data.klines||[]}}catch(error){lastError=error}}throw lastError})),payloads=attempts.filter(function(result){return result.status==="fulfilled"}).map(function(result){return result.value});
   if(!payloads.length)throw new Error("沪深主力资金源暂时不可用");
-  const totals=new Map();
-  payloads.forEach(function(payload){payload.rows.forEach(function(line){const cells=String(line).split(","),stamp=cells[0],main=Number(cells[1]);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(stamp)&&Number.isFinite(main))totals.set(stamp,(totals.get(stamp)||0)+main)})});
-  const points=[...totals.entries()].sort(function(a,b){return a[0].localeCompare(b[0])}).map(function(entry,index,rows){const previous=index?rows[index-1]:null,elapsed=previous?(Date.parse(entry[0].replace(" ","T")+":00+08:00")-Date.parse(previous[0].replace(" ","T")+":00+08:00"))/60000:1,minutes=elapsed>5?1:Math.max(1,elapsed);return {time:entry[0],net:entry[1],speed:previous?(entry[1]-previous[1])/minutes:0}});
-  const recent=points.slice(-120),smooth=function(end){const safeEnd=Math.max(0,end),values=recent.slice(Math.max(0,safeEnd-2),safeEnd+1).map(function(point){return point.speed});return values.length?values.reduce(function(sum,value){return sum+value},0)/values.length:0},last=recent.length-1,currentSpeed=last>=0?smooth(last):0,previousSpeed=last>=0?smooth(last-3):0,direction=currentSpeed>0?"in":currentSpeed<0?"out":"flat",accelerating=Math.abs(currentSpeed)>=50000000&&Math.sign(currentSpeed)===Math.sign(previousSpeed)&&Math.abs(currentSpeed)>=Math.abs(previousSpeed)*1.25;
-  return {marketDate:recent.length?recent[last].time.slice(0,10):null,updatedAt:recent.length?recent[last].time:null,net:recent.length?recent[last].net:0,speed:currentSpeed,previousSpeed:previousSpeed,direction:direction,accelerating:accelerating,points:recent,coverage:payloads.map(function(payload){return payload.name}),partial:payloads.length<markets.length,source:"东方财富沪深指数主力资金分钟流向",pollSeconds:60};
+  const totals=new Map();payloads.forEach(function(payload){payload.rows.forEach(function(line){const cells=String(line).split(","),stamp=cells[0],main=Number(cells[1]);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(stamp)&&Number.isFinite(main))totals.set(stamp,(totals.get(stamp)||0)+main)})});
+  const points=[...totals.entries()].sort(function(a,b){return a[0].localeCompare(b[0])}).map(function(entry,index,rows){const previous=index?rows[index-1]:null,elapsed=previous?(Date.parse(entry[0].replace(" ","T")+":00+08:00")-Date.parse(previous[0].replace(" ","T")+":00+08:00"))/60000:1,minutes=elapsed>5?1:Math.max(1,elapsed);return {time:entry[0],net:entry[1],speed:previous?(entry[1]-previous[1])/minutes:0}}),recent=points.slice(-240),smooth=function(end){const safeEnd=Math.max(0,end),values=recent.slice(Math.max(0,safeEnd-2),safeEnd+1).map(function(point){return point.speed});return values.length?values.reduce(function(sum,value){return sum+value},0)/values.length:0},last=recent.length-1,currentSpeed=last>=0?smooth(last):0,previousSpeed=last>=0?smooth(last-3):0;
+  return {marketDate:recent.length?recent[last].time.slice(0,10):null,updatedAt:recent.length?recent[last].time:null,net:recent.length?recent[last].net:0,speed:currentSpeed,previousSpeed:previousSpeed,direction:currentSpeed>0?"in":currentSpeed<0?"out":"flat",accelerating:Math.abs(currentSpeed)>=50000000&&Math.sign(currentSpeed)===Math.sign(previousSpeed)&&Math.abs(currentSpeed)>=Math.abs(previousSpeed)*1.25,points:recent,coverage:payloads.map(function(payload){return payload.name}),partial:payloads.length<markets.length};
+}
+
+async function getChinaFlowSpeed(requestedDate){
+  if(requestedDate&&!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate))throw new Error("日期格式无效");
+  if(!requestedDate){const live=await edgeCacheGet("flow_live");if(live)return {...live,cached:true}}
+  const archiveKey=requestedDate?"flow_"+requestedDate.replace(/-/g,""):null,archived=archiveKey?await edgeStoreGet(archiveKey):null;
+  if(archived){const manifest=await edgeStoreGet("flow_dates")||[];return {...archived,availableDates:manifest,cached:true}}
+  const indexData=await fetchChinaIndexCurves(requestedDate);
+  if(requestedDate){const manifest=await edgeStoreGet("flow_dates")||[];return {marketDate:requestedDate,updatedAt:null,net:0,speed:0,previousSpeed:0,direction:"flat",accelerating:false,points:[],indices:indexData.curves,availableDates:[...new Set(manifest.concat(indexData.availableDates))].sort(),historyUnavailable:true,source:"历史指数分钟行情",pollSeconds:60,cached:false}}
+  const flow=await fetchChinaFlowCurrent(),result={...flow,indices:indexData.curves,availableDates:indexData.availableDates,source:"东方财富沪深主力资金与指数分钟行情",pollSeconds:60,cached:false};
+  if(flow.marketDate){const key="flow_"+flow.marketDate.replace(/-/g,""),manifest=await edgeStoreGet("flow_dates")||[],dates=[...new Set(manifest.concat(flow.marketDate))].sort().slice(-10);result.availableDates=[...new Set(result.availableDates.concat(dates))].sort();await Promise.all([edgeStorePut(key,result),edgeStorePut("flow_dates",dates)])}
+  await edgeCachePut("flow_live",result,45);return result;
 }
 
 function eastmoneyJson(response,label){
@@ -420,7 +442,7 @@ async function handleRequest(request){
     return jsonResponse({query:query,market:market,results:await searchStocks(query,market)},200);
   }
   if(url.pathname==="/api/china-etf-flow"){try{const symbol=(url.searchParams.get("symbol")||"").trim(),etf=symbol&&nationalTeamEtfs.find(function(item){return item.symbol===symbol});return jsonResponse(etf?{row:await getChinaEtfFlow(etf),updatedAt:new Date().toISOString()}:getChinaEtfFlows(),200)}catch(error){return jsonResponse({error:error.message||"ETF资金数据暂不可用"},502)}}
-  if(url.pathname==="/api/china-flow-speed"){try{return jsonResponse(await getChinaFlowSpeed(),200)}catch(error){return jsonResponse({error:error.message||"A股主力资金流速暂不可用"},502)}}
+  if(url.pathname==="/api/china-flow-speed"){try{return jsonResponse(await getChinaFlowSpeed((url.searchParams.get("date")||"").trim()||null),200)}catch(error){return jsonResponse({error:error.message||"A股主力资金流速暂不可用"},502)}}
   if(url.pathname==="/api/china-etf-detail"){try{return jsonResponse(await getChinaEtfDetail((url.searchParams.get("symbol")||"").trim(),url.searchParams.get("interval"),(url.searchParams.get("date")||"").trim()||null),200)}catch(error){return jsonResponse({error:error.message||"ETF分时数据暂不可用"},502)}}
   if(url.pathname==="/api/cffex-positions"){try{return jsonResponse(await getCffexPositions(),200)}catch(error){return jsonResponse({date:null,rows:[],error:error.message||"中金所排名暂不可用"},502)}}
   if(url.pathname==="/api/quote"){
