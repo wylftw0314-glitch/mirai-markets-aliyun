@@ -94,11 +94,10 @@ async function getChinaFlowSpeed(requestedDate){
   if(!requestedDate){const live=await edgeCacheGet("flow_live");if(live)return {...live,cached:true}}
   const archiveKey=requestedDate?"flow_"+requestedDate.replace(/-/g,""):null,archived=archiveKey?await edgeStoreGet(archiveKey):null;
   if(archived){const manifest=await edgeStoreGet("flow_dates")||[];return {...archived,availableDates:manifest,cached:true}}
-  const indexData=await fetchChinaIndexCurves(requestedDate);
-  if(requestedDate){const manifest=await edgeStoreGet("flow_dates")||[];return {marketDate:requestedDate,updatedAt:null,net:0,speed:0,previousSpeed:0,direction:"flat",accelerating:false,points:[],indices:indexData.curves,availableDates:[...new Set(manifest.concat(indexData.availableDates))].sort(),historyUnavailable:true,source:"历史指数分钟行情",pollSeconds:60,cached:false}}
-  const flow=await fetchChinaFlowCurrent(),result={...flow,indices:indexData.curves,availableDates:indexData.availableDates,source:"东方财富沪深主力资金与指数分钟行情",pollSeconds:60,cached:false};
+  if(requestedDate){const indexData=await fetchChinaIndexCurves(requestedDate),manifest=await edgeStoreGet("flow_dates")||[];return {marketDate:requestedDate,updatedAt:null,net:0,speed:0,previousSpeed:0,direction:"flat",accelerating:false,points:[],indices:indexData.curves,availableDates:[...new Set(manifest.concat(indexData.availableDates))].sort(),historyUnavailable:true,source:"历史指数分钟行情",pollSeconds:120,cached:false}}
+  const flow=await fetchChinaFlowCurrent(),indexData=await fetchChinaIndexCurves(),result={...flow,indices:indexData.curves,availableDates:indexData.availableDates,source:"东方财富沪深主力资金与指数分钟行情",pollSeconds:120,cached:false};
   if(flow.marketDate){const key="flow_"+flow.marketDate.replace(/-/g,""),manifest=await edgeStoreGet("flow_dates")||[],dates=[...new Set(manifest.concat(flow.marketDate))].sort().slice(-10);result.availableDates=[...new Set(result.availableDates.concat(dates))].sort();await Promise.all([edgeStorePut(key,result),edgeStorePut("flow_dates",dates)])}
-  await edgeCachePut("flow_live",result,45);return result;
+  await edgeCachePut("flow_live",result,120);return result;
 }
 
 function eastmoneyJson(response,label){
