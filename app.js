@@ -12,7 +12,7 @@ function readJSON(key,fallback){
 
 const state={
   items:[],market:'ALL',
-  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,flowInitialized:false,lastFlowAlert:null,flowDate:null,flowViewDate:null,flowDates:[],
+  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,flowInitialized:false,lastFlowAlert:null,flowDate:null,flowViewDate:null,flowDates:[],flowChartData:null,flowSeries:{speed:true,sh:true,sz:true,cyb:true,star50:true},flowXZoom:1,flowYZoom:1,flowYOffset:0,
   favorites:readJSON('mirai-favorites',[]),
   customStocks:readJSON('mirai-custom-stocks',[]),
   currency:localStorage.getItem('mirai-currency')||'LOCAL',
@@ -25,6 +25,8 @@ const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;'
 
 $('#market-closed').insertAdjacentHTML('afterend','<div id="detail-date-controls" class="detail-date-controls"><button id="detail-prev-day" type="button" aria-label="上一交易日">‹ 上一交易日</button><label>交易日 <input id="detail-date" type="date" aria-label="选择交易日"></label><button id="detail-next-day" type="button" aria-label="下一交易日">下一交易日 ›</button><button id="detail-latest-day" type="button">最新</button></div>');
 $('#china-market-section .china-banner').insertAdjacentHTML('afterend','<section class="flow-radar" aria-labelledby="flow-radar-title"><div class="flow-radar-head"><div><p>A-SHARE MONEY FLOW RADAR</p><h3 id="flow-radar-title">当日主力资金流速</h3><span id="flow-radar-time">正在连接沪深分钟资金流</span></div><button id="flow-notification-toggle" type="button">开启提醒</button></div><div class="flow-day-controls"><button id="flow-prev-day" type="button">‹ 上一交易日</button><label>交易日 <input id="flow-date" type="date"></label><button id="flow-next-day" type="button">下一交易日 ›</button><button id="flow-latest-day" type="button">最新</button></div><div class="flow-radar-grid"><div><span>沪深累计主力净流入</span><strong id="flow-radar-net">—</strong></div><div><span>当前流速（3分钟平滑）</span><strong id="flow-radar-speed">—</strong></div><div><span>流速状态</span><strong id="flow-radar-status">等待数据</strong></div></div><div class="flow-chart-legend"><span class="speed">资金流速</span><span class="sh">上证</span><span class="sz">深指</span><span class="cyb">创业板</span><span class="star50">科创50</span></div><div id="flow-radar-chart" class="flow-radar-chart" aria-label="主力资金流速与主要指数走势"></div><div id="flow-alert-history" class="flow-alert-history"><span>提醒记录</span><p>尚未触发流速提醒</p></div><small>口径：上证指数与深证成指对应市场主力净流入合计；指数曲线按所选交易日首个点位归一化为涨跌幅。主力分钟历史通过阿里云边缘存储逐日积累。</small></section>');
+$('.flow-chart-legend').innerHTML='<button class="speed active" data-flow-series="speed">资金流速</button><button class="sh active" data-flow-series="sh">上证</button><button class="sz active" data-flow-series="sz">深指</button><button class="cyb active" data-flow-series="cyb">创业板</button><button class="star50 active" data-flow-series="star50">科创50</button>';
+$('.flow-chart-legend').insertAdjacentHTML('afterend','<div class="flow-chart-controls"><label>时间范围 <select id="flow-x-zoom"><option value="1">全天</option><option value="0.75">最近75%</option><option value="0.5">最近50%</option><option value="0.25">最近25%</option></select></label><span>纵向</span><button type="button" data-flow-action="zoom-in">放大＋</button><button type="button" data-flow-action="zoom-out">缩小－</button><button type="button" data-flow-action="up">上移↑</button><button type="button" data-flow-action="down">下移↓</button><button type="button" data-flow-action="reset">复位</button></div>');
 document.body.insertAdjacentHTML('beforeend','<div id="flow-toast" class="flow-toast" role="status" aria-live="assertive" hidden></div>');
 
 function updateDetailDateControls(data){
@@ -405,9 +407,20 @@ function billboardHTML(data){
 }
 
 function flowSpeedChart(points,indices){
-  const flows=points||[],curves=indices||[];if(flows.length<2&&!curves.length)return '<p>所选交易日暂无分钟数据</p>';
-  const width=900,height=210,padX=42,padY=18,flowValues=flows.map(point=>Number(point.speed)||0),flowMax=Math.max(...flowValues.map(Math.abs),1),indexSeries=curves.map(curve=>{const base=Number(curve.points?.[0]?.value)||1;return {...curve,changes:(curve.points||[]).map(point=>(Number(point.value)/base-1)*100)}}),indexMax=Math.max(...indexSeries.flatMap(curve=>curve.changes.map(Math.abs)),.1),x=(index,length)=>padX+index*(width-padX*2)/Math.max(1,length-1),y=(value,max)=>height/2-value/max*(height/2-padY),path=(values,max)=>values.map((value,index)=>(index?'L':'M')+x(index,values.length).toFixed(1)+' '+y(value,max).toFixed(1)).join(' '),flowPath=flowValues.length>1?`<path d="${path(flowValues,flowMax)}" class="flow-speed-line ${flowValues[flowValues.length-1]>=0?'in':'out'}"/>`:'',indexPaths=indexSeries.map(curve=>`<path d="${path(curve.changes,indexMax)}" class="flow-index-line ${escapeHTML(curve.id)}"/>`).join('');
-  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="主力资金流速与四个主要指数的日内涨跌"><line x1="${padX}" y1="${height/2}" x2="${width-padX}" y2="${height/2}" class="flow-zero"/><text x="4" y="18" class="flow-axis-label">流速</text><text x="${width-4}" y="18" text-anchor="end" class="flow-axis-label">指数涨跌幅</text><text x="4" y="${height/2-5}" class="flow-axis-label">0</text><text x="${width-4}" y="${height/2-5}" text-anchor="end" class="flow-axis-label">0%</text>${flowPath}${indexPaths}</svg>`;
+  const allFlows=points||[],allCurves=indices||[];if(allFlows.length<2&&!allCurves.length)return '<p>所选交易日暂无分钟数据</p>';
+  const width=900,height=260,padX=58,padTop=22,padBottom=34,mid=(padTop+height-padBottom)/2,amp=(height-padTop-padBottom)/2,sliceRecent=rows=>rows.slice(Math.max(0,Math.floor(rows.length*(1-state.flowXZoom)))),flows=sliceRecent(allFlows),allFlowValues=allFlows.map(point=>Number(point.speed)||0),flowValues=flows.map(point=>Number(point.speed)||0),flowMax=Math.max(...allFlowValues.map(Math.abs),1),indexSeries=allCurves.map(curve=>{const base=Number(curve.points?.[0]?.value)||1,allChanges=(curve.points||[]).map(point=>(Number(point.value)/base-1)*100),start=Math.max(0,Math.floor(allChanges.length*(1-state.flowXZoom)));return {...curve,changes:allChanges.slice(start),times:(curve.points||[]).slice(start).map(point=>point.time),visible:state.flowSeries[curve.id]!==false}}),indexMax=Math.max(...indexSeries.flatMap(curve=>curve.changes.map(Math.abs)),.1),x=(index,length)=>padX+index*(width-padX*2)/Math.max(1,length-1),y=(value,max)=>mid-(value/max-state.flowYOffset)*amp*state.flowYZoom,path=(values,max)=>values.map((value,index)=>(index?'L':'M')+x(index,values.length).toFixed(1)+' '+y(value,max).toFixed(1)).join(' ');
+  const flowPath=state.flowSeries.speed&&flowValues.length>1?`<path d="${path(flowValues,flowMax)}" class="flow-speed-line ${flowValues[flowValues.length-1]>=0?'in':'out'}"/>`:'',indexPaths=indexSeries.filter(curve=>curve.visible).map(curve=>`<path d="${path(curve.changes,indexMax)}" class="flow-index-line ${escapeHTML(curve.id)}"/>`).join(''),gridRatios=[1,.5,0,-.5,-1],horizontal=gridRatios.map(ratio=>{const py=mid-ratio*amp;const normalized=state.flowYOffset+ratio/state.flowYZoom;return `<line x1="${padX}" y1="${py}" x2="${width-padX}" y2="${py}" class="flow-grid${ratio===0?' zero':''}"/><text x="${padX-7}" y="${py+3}" text-anchor="end" class="flow-axis-label">${(normalized*flowMax/1e8).toFixed(1)}</text><text x="${width-padX+7}" y="${py+3}" class="flow-axis-label">${(normalized*indexMax).toFixed(2)}%</text>`}).join(''),xSource=flows.length?flows:(indexSeries[0]?.times||[]).map(time=>({time:time})),ticks=[0,.25,.5,.75,1].map(ratio=>{const index=Math.min(xSource.length-1,Math.round((xSource.length-1)*ratio)),time=String(xSource[index]?.time||'').slice(11,16),px=padX+ratio*(width-padX*2);return `<line x1="${px}" y1="${padTop}" x2="${px}" y2="${height-padBottom}" class="flow-grid vertical"/><text x="${px}" y="${height-10}" text-anchor="middle" class="flow-axis-label">${escapeHTML(time)}</text>`}).join('');
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="可缩放的主力资金流速与四个主要指数日内涨跌图"><defs><clipPath id="flow-chart-clip"><rect x="${padX}" y="${padTop}" width="${width-padX*2}" height="${height-padTop-padBottom}"/></clipPath></defs><text x="4" y="14" class="flow-axis-title">亿元/分钟</text><text x="${width-4}" y="14" text-anchor="end" class="flow-axis-title">指数涨跌幅</text>${horizontal}${ticks}<g clip-path="url(#flow-chart-clip)">${flowPath}${indexPaths}</g></svg>`;
+}
+
+function renderFlowChart(){if(state.flowChartData)$('#flow-radar-chart').innerHTML=flowSpeedChart(state.flowChartData.points,state.flowChartData.indices)}
+function changeFlowChart(action){
+  if(action==='zoom-in')state.flowYZoom=Math.min(4,state.flowYZoom*1.25);
+  if(action==='zoom-out')state.flowYZoom=Math.max(.5,state.flowYZoom/1.25);
+  if(action==='up')state.flowYOffset=Math.min(1,state.flowYOffset+.12/state.flowYZoom);
+  if(action==='down')state.flowYOffset=Math.max(-1,state.flowYOffset-.12/state.flowYZoom);
+  if(action==='reset'){state.flowXZoom=1;state.flowYZoom=1;state.flowYOffset=0;$('#flow-x-zoom').value='1'}
+  renderFlowChart();
 }
 
 function showFlowAlert(data){
@@ -426,7 +439,7 @@ async function loadChinaFlowSpeed(requestedDate){
     $('#flow-radar-speed').textContent=data.historyUnavailable?'—':(speed>=0?'+':'-')+compactCny(Math.abs(speed))+'/分钟';
     $('#flow-radar-speed').className=incoming?'flow-in':'flow-out';$('#flow-radar-status').className=data.accelerating?(incoming?'flow-in':'flow-out'):'';$('#flow-radar-status').textContent=status;
     $('#flow-radar-time').textContent=`交易日 ${data.marketDate||'—'} · 更新 ${data.updatedAt?data.updatedAt.slice(11):'收盘数据'} · ${(data.coverage||['沪市','深市']).join('+')}${data.partial?'（部分）':''} · ${data.cached?'缓存命中':'实时查询'}`;
-    $('#flow-radar-chart').innerHTML=flowSpeedChart(data.points,data.indices);
+    state.flowChartData=data;renderFlowChart();
     const now=Date.now(),alertKey=data.updatedAt+'-'+data.direction,cooldown=!state.lastFlowAlert||now-state.lastFlowAlert.time>=300000;
     if(!state.flowDate&&state.flowInitialized&&data.accelerating&&alertKey!==state.lastFlowAlert?.key&&cooldown){showFlowAlert(data);state.lastFlowAlert={key:alertKey,time:now}}
     state.flowInitialized=true;
@@ -463,6 +476,14 @@ $('#flow-date').onchange=event=>{if(event.target.value)loadChinaFlowSpeed(event.
 $('#flow-prev-day').onclick=()=>{const index=state.flowDates.indexOf(state.flowViewDate);if(index>0)loadChinaFlowSpeed(state.flowDates[index-1])};
 $('#flow-next-day').onclick=()=>{const index=state.flowDates.indexOf(state.flowViewDate);if(index>=0&&index<state.flowDates.length-1)loadChinaFlowSpeed(state.flowDates[index+1])};
 $('#flow-latest-day').onclick=()=>loadChinaFlowSpeed(null);
+$$('[data-flow-series]').forEach(button=>button.onclick=()=>{const id=button.dataset.flowSeries;state.flowSeries[id]=!state.flowSeries[id];button.classList.toggle('active',state.flowSeries[id]);button.setAttribute('aria-pressed',String(state.flowSeries[id]));renderFlowChart()});
+$('#flow-x-zoom').onchange=event=>{state.flowXZoom=Number(event.target.value)||1;renderFlowChart()};
+$$('[data-flow-action]').forEach(button=>button.onclick=()=>changeFlowChart(button.dataset.flowAction));
+const flowChartElement=$('#flow-radar-chart');let flowDrag=null;
+flowChartElement.onwheel=event=>{event.preventDefault();changeFlowChart(event.deltaY<0?'zoom-in':'zoom-out')};
+flowChartElement.onpointerdown=event=>{flowDrag={y:event.clientY,offset:state.flowYOffset};flowChartElement.setPointerCapture(event.pointerId);flowChartElement.classList.add('dragging')};
+flowChartElement.onpointermove=event=>{if(!flowDrag)return;state.flowYOffset=Math.max(-1,Math.min(1,flowDrag.offset+(event.clientY-flowDrag.y)/(Math.max(120,flowChartElement.clientHeight)*state.flowYZoom)));renderFlowChart()};
+flowChartElement.onpointerup=flowChartElement.onpointercancel=()=>{flowDrag=null;flowChartElement.classList.remove('dragging')};
 if(localStorage.getItem('mirai-flow-notifications')==='on'){$('#flow-notification-toggle').textContent='系统通知已开启';$('#flow-notification-toggle').classList.add('active')}
 if(!window.isSecureContext||!('Notification'in window)){$('#flow-notification-toggle').textContent='当前连接仅页面提醒';$('#flow-notification-toggle').disabled=true}
 
