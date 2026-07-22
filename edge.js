@@ -68,6 +68,16 @@ function getChinaEtfFlows(){
   return {rows:nationalTeamEtfs,updatedAt:new Date().toISOString(),source:"东方财富 ETF 主力资金流",basis:"公开基金定期报告重点持有人观察池；资金字段为二级市场主力交易资金口径，不等于ETF净申购"};
 }
 
+async function getChinaFlowSpeed(){
+  const markets=[{secid:"1.000001",name:"沪市"},{secid:"0.399001",name:"深市"}],headers={"User-Agent":"Mozilla/5.0","Referer":"https://data.eastmoney.com/","Accept":"application/json"};
+  const payloads=await Promise.all(markets.map(async function(market){const url="https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid="+market.secid+"&lmt=0&klt=1&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55",response=await fetch(url,{headers:headers}),json=await eastmoneyJson(response,market.name+"主力资金");return {name:market.name,rows:json&&json.data&&json.data.klines||[]}}));
+  const totals=new Map();
+  payloads.forEach(function(payload){payload.rows.forEach(function(line){const cells=String(line).split(","),stamp=cells[0],main=Number(cells[1]);if(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(stamp)&&Number.isFinite(main))totals.set(stamp,(totals.get(stamp)||0)+main)})});
+  const points=[...totals.entries()].sort(function(a,b){return a[0].localeCompare(b[0])}).map(function(entry,index,rows){const previous=index?rows[index-1]:null,elapsed=previous?(Date.parse(entry[0].replace(" ","T")+":00+08:00")-Date.parse(previous[0].replace(" ","T")+":00+08:00"))/60000:1,minutes=elapsed>5?1:Math.max(1,elapsed);return {time:entry[0],net:entry[1],speed:previous?(entry[1]-previous[1])/minutes:0}});
+  const recent=points.slice(-120),smooth=function(end){const safeEnd=Math.max(0,end),values=recent.slice(Math.max(0,safeEnd-2),safeEnd+1).map(function(point){return point.speed});return values.length?values.reduce(function(sum,value){return sum+value},0)/values.length:0},last=recent.length-1,currentSpeed=last>=0?smooth(last):0,previousSpeed=last>=0?smooth(last-3):0,direction=currentSpeed>0?"in":currentSpeed<0?"out":"flat",accelerating=Math.abs(currentSpeed)>=50000000&&Math.sign(currentSpeed)===Math.sign(previousSpeed)&&Math.abs(currentSpeed)>=Math.abs(previousSpeed)*1.25;
+  return {marketDate:recent.length?recent[last].time.slice(0,10):null,updatedAt:recent.length?recent[last].time:null,net:recent.length?recent[last].net:0,speed:currentSpeed,previousSpeed:previousSpeed,direction:direction,accelerating:accelerating,points:recent,source:"东方财富沪深指数主力资金分钟流向",pollSeconds:60};
+}
+
 function eastmoneyJson(response,label){
   if(!response.ok)throw new Error(label+" HTTP "+response.status);
   return response.text().then(function(text){try{return JSON.parse(text)}catch(error){throw new Error(label+" 返回了非JSON内容")}});
@@ -409,6 +419,7 @@ async function handleRequest(request){
     return jsonResponse({query:query,market:market,results:await searchStocks(query,market)},200);
   }
   if(url.pathname==="/api/china-etf-flow"){try{const symbol=(url.searchParams.get("symbol")||"").trim(),etf=symbol&&nationalTeamEtfs.find(function(item){return item.symbol===symbol});return jsonResponse(etf?{row:await getChinaEtfFlow(etf),updatedAt:new Date().toISOString()}:getChinaEtfFlows(),200)}catch(error){return jsonResponse({error:error.message||"ETF资金数据暂不可用"},502)}}
+  if(url.pathname==="/api/china-flow-speed"){try{return jsonResponse(await getChinaFlowSpeed(),200)}catch(error){return jsonResponse({error:error.message||"A股主力资金流速暂不可用"},502)}}
   if(url.pathname==="/api/china-etf-detail"){try{return jsonResponse(await getChinaEtfDetail((url.searchParams.get("symbol")||"").trim(),url.searchParams.get("interval"),(url.searchParams.get("date")||"").trim()||null),200)}catch(error){return jsonResponse({error:error.message||"ETF分时数据暂不可用"},502)}}
   if(url.pathname==="/api/cffex-positions"){try{return jsonResponse(await getCffexPositions(),200)}catch(error){return jsonResponse({date:null,rows:[],error:error.message||"中金所排名暂不可用"},502)}}
   if(url.pathname==="/api/quote"){

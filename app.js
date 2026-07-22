@@ -12,7 +12,7 @@ function readJSON(key,fallback){
 
 const state={
   items:[],market:'ALL',
-  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,
+  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,flowInitialized:false,lastFlowAlert:null,
   favorites:readJSON('mirai-favorites',[]),
   customStocks:readJSON('mirai-custom-stocks',[]),
   currency:localStorage.getItem('mirai-currency')||'LOCAL',
@@ -24,6 +24,8 @@ const $$=selector=>[...document.querySelectorAll(selector)];
 const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 
 $('#market-closed').insertAdjacentHTML('afterend','<div id="detail-date-controls" class="detail-date-controls"><button id="detail-prev-day" type="button" aria-label="上一交易日">‹ 上一交易日</button><label>交易日 <input id="detail-date" type="date" aria-label="选择交易日"></label><button id="detail-next-day" type="button" aria-label="下一交易日">下一交易日 ›</button><button id="detail-latest-day" type="button">最新</button></div>');
+$('#china-market-section .china-banner').insertAdjacentHTML('afterend','<section class="flow-radar" aria-labelledby="flow-radar-title"><div class="flow-radar-head"><div><p>A-SHARE MONEY FLOW RADAR</p><h3 id="flow-radar-title">当日主力资金流速</h3><span id="flow-radar-time">正在连接沪深分钟资金流</span></div><button id="flow-notification-toggle" type="button">开启提醒</button></div><div class="flow-radar-grid"><div><span>沪深累计主力净流入</span><strong id="flow-radar-net">—</strong></div><div><span>当前流速（3分钟平滑）</span><strong id="flow-radar-speed">—</strong></div><div><span>流速状态</span><strong id="flow-radar-status">等待数据</strong></div></div><div id="flow-radar-chart" class="flow-radar-chart" aria-label="主力资金流速走势"></div><div id="flow-alert-history" class="flow-alert-history"><span>提醒记录</span><p>尚未触发流速提醒</p></div><small>口径：上证指数与深证成指对应市场主力净流入合计；流速为累计净流入的分钟变化。连续同向且速度较前一窗口提高至少25%、绝对速度达到0.5亿元/分钟时提醒，提醒冷却5分钟。</small></section>');
+document.body.insertAdjacentHTML('beforeend','<div id="flow-toast" class="flow-toast" role="status" aria-live="assertive" hidden></div>');
 
 function updateDetailDateControls(data){
   state.detailDate=data.marketDate||state.detailDate;
@@ -402,6 +404,40 @@ function billboardHTML(data){
   return `<div class="billboard-seats" title="${escapeHTML(data.reason||'交易公开信息')}">${side('买入',data.buys||[],'buy')}${side('卖出',data.sells||[],'sell')}</div>`;
 }
 
+function flowSpeedChart(points){
+  const rows=(points||[]).slice(-45),values=rows.map(point=>Number(point.speed)||0);if(values.length<2)return '<p>等待更多分钟数据…</p>';
+  const width=760,height=112,pad=12,max=Math.max(...values.map(Math.abs),1),x=index=>pad+index*(width-pad*2)/(values.length-1),y=value=>height/2-value/max*(height/2-pad),line=values.map((value,index)=>(index?'L':'M')+x(index).toFixed(1)+' '+y(value).toFixed(1)).join(' '),last=values[values.length-1];
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="最近45分钟主力资金流速"><line x1="${pad}" y1="${height/2}" x2="${width-pad}" y2="${height/2}" class="flow-zero"/><path d="${line}" class="flow-speed-line ${last>=0?'in':'out'}"/></svg>`;
+}
+
+function showFlowAlert(data){
+  const incoming=data.direction==='in',title=incoming?'A股主力流入正在加速':'A股主力流出正在加速',message=`${title}：${compactCny(Math.abs(data.speed))}/分钟，累计${data.net>=0?'净流入':'净流出'} ${compactCny(Math.abs(data.net))}`;
+  const toast=$('#flow-toast');toast.textContent=message;toast.hidden=false;clearTimeout(showFlowAlert.timer);showFlowAlert.timer=setTimeout(()=>toast.hidden=true,9000);
+  $('#flow-alert-history').innerHTML=`<span>最近提醒</span><p>${escapeHTML(data.updatedAt)} · ${escapeHTML(message)}</p>`;
+  if(localStorage.getItem('mirai-flow-notifications')==='on'&&window.isSecureContext&&'Notification'in window&&Notification.permission==='granted')new Notification(title,{body:message,tag:'mirai-a-share-flow'});
+}
+
+async function loadChinaFlowSpeed(){
+  try{
+    const data=await requestJSON('/api/china-flow-speed?v='+Date.now(),'A股主力资金流速'),speed=Number(data.speed)||0,previous=Number(data.previousSpeed)||0,incoming=speed>0,status=data.accelerating?(incoming?'流入加速':'流出加速'):(Math.abs(speed)<10000000?'流速平缓':incoming?'保持流入':'保持流出');
+    $('#flow-radar-net').textContent=(data.net>=0?'+':'-')+compactCny(Math.abs(data.net));
+    $('#flow-radar-speed').textContent=(speed>=0?'+':'-')+compactCny(Math.abs(speed))+'/分钟';
+    $('#flow-radar-speed').className=incoming?'flow-in':'flow-out';$('#flow-radar-status').className=data.accelerating?(incoming?'flow-in':'flow-out'):'';$('#flow-radar-status').textContent=status;
+    $('#flow-radar-time').textContent=`交易日 ${data.marketDate||'—'} · 更新 ${data.updatedAt?data.updatedAt.slice(11):'—'} · 60秒自动监测`;
+    $('#flow-radar-chart').innerHTML=flowSpeedChart(data.points);
+    const now=Date.now(),alertKey=data.updatedAt+'-'+data.direction,cooldown=!state.lastFlowAlert||now-state.lastFlowAlert.time>=300000;
+    if(state.flowInitialized&&data.accelerating&&alertKey!==state.lastFlowAlert?.key&&cooldown){showFlowAlert(data);state.lastFlowAlert={key:alertKey,time:now}}
+    state.flowInitialized=true;
+  }catch(error){$('#flow-radar-time').textContent='资金流速暂时不可用，将在60秒后重试';$('#flow-radar-status').textContent='连接中断'}
+}
+
+async function toggleFlowNotifications(){
+  const button=$('#flow-notification-toggle');
+  if(!window.isSecureContext||!('Notification'in window)){button.textContent='当前连接仅页面提醒';button.disabled=true;return}
+  if(Notification.permission!=='granted'){const permission=await Notification.requestPermission();if(permission!=='granted'){button.textContent='系统通知未授权';return}}
+  const enabled=localStorage.getItem('mirai-flow-notifications')!=='on';localStorage.setItem('mirai-flow-notifications',enabled?'on':'off');button.textContent=enabled?'系统通知已开启':'开启系统通知';button.classList.toggle('active',enabled);
+}
+
 async function loadChinaMonitor(){
   $('#etf-flow-updated').textContent='正在更新…';$('#cffex-updated').textContent='正在更新…';
   const [etfResult,cffexResult]=await Promise.allSettled([
@@ -420,8 +456,13 @@ async function loadChinaMonitor(){
 }
 
 $('#refresh-china-monitor').onclick=loadChinaMonitor;
+$('#flow-notification-toggle').onclick=toggleFlowNotifications;
+if(localStorage.getItem('mirai-flow-notifications')==='on'){$('#flow-notification-toggle').textContent='系统通知已开启';$('#flow-notification-toggle').classList.add('active')}
+if(!window.isSecureContext||!('Notification'in window)){$('#flow-notification-toggle').textContent='当前连接仅页面提醒';$('#flow-notification-toggle').disabled=true}
 
 refreshQuotes();
 loadChinaMonitor();
+loadChinaFlowSpeed();
 setInterval(refreshQuotes,60000);
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')refreshQuotes()});
+setInterval(loadChinaFlowSpeed,60000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){refreshQuotes();loadChinaFlowSpeed()}});
