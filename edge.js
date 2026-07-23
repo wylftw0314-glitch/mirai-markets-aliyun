@@ -287,6 +287,15 @@ async function getNaverQuote(symbol){
   if(!metaInfo)return jsonResponse({error:"Unsupported symbol"},400);
   const isIndex=symbol==="^KS11"||symbol==="^KQ11";
   const code=isIndex?(symbol==="^KS11"?"KOSPI":"KOSDAQ"):symbol.replace(/\.(KS|KQ)$/," ").trim();
+  if(isIndex){
+    const response=await fetch("https://m.stock.naver.com/api/index/"+code+"/basic",{headers:{"User-Agent":"Mozilla/5.0","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
+    if(!response.ok)return jsonResponse({error:"Naver index HTTP "+response.status,symbol:symbol},502);
+    const data=await response.json(),direction=data.compareToPreviousPrice&&String(data.compareToPreviousPrice.code)==="5"?-1:1;
+    const price=naverNumber(data.closePrice),change=Math.abs(naverNumber(data.compareToPreviousClosePrice))*direction,meta=quoteInfo[symbol];
+    const images=data.imageCharts||{},sparkImage=images.transparent||images.day||images.day_up_tablet||null;
+    const item={id:meta[0],name:meta[1],localName:data.stockName||meta[1],symbol:symbol,market:"KR",kind:"index",price:price,change:change,changePercent:Math.abs(naverNumber(data.fluctuationsRatio))*direction,currency:"KRW",points:[],sparkImage:sparkImage,source:"Naver Finance Index Chart"};
+    return jsonResponse({item:item,updatedAt:data.localTradedAt||new Date().toISOString(),source:"Naver Finance Index Chart",subrequests:1},200);
+  }
   const url=isIndex?"https://polling.finance.naver.com/api/realtime/domestic/index/"+code:"https://m.stock.naver.com/api/stock/"+code+"/basic";
   const response=await fetch(url,{headers:{"User-Agent":"Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36","Referer":"https://m.stock.naver.com/","Accept":"application/json"}});
   if(!response.ok)return jsonResponse({error:"Naver HTTP "+response.status,symbol:symbol},502);

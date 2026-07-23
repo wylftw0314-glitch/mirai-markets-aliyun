@@ -110,7 +110,8 @@ function peRatio(value){
 
 function sessionLabel(value){return {pre:'盘前',regular:'盘中',after:'盘后',closed:'休市'}[value]||''}
 
-function spark(points,positive){
+function spark(points,positive,imageUrl){
+  if(imageUrl)return `<img class="spark spark-image" src="${escapeHTML(imageUrl)}" alt="官方当日分时走势" loading="lazy" referrerpolicy="no-referrer">`;
   if(!points?.length||points.length<2)return '<span class="spark-empty">等待当日分时</span>';
   const min=Math.min(...points),max=Math.max(...points),range=max-min||1;
   const path=points.map((point,index)=>`${index?'L':'M'} ${(index/(points.length-1))*180} ${48-((point-min)/range)*42}`).join(' ');
@@ -118,7 +119,7 @@ function spark(points,positive){
 }
 
 function card(item){
-  return `<article class="index-card"><div class="row"><div><span class="flag">${escapeHTML(item.market)}</span><h3>${escapeHTML(item.name)}</h3><small>${escapeHTML(item.localName)}</small></div><strong>${Number(item.price).toLocaleString()}</strong></div><div class="row chart"><span class="${item.change>=0?'gain':'loss'}">${item.change>=0?'+':''}${Number(item.changePercent).toFixed(2)}%</span>${spark(item.points,item.change>=0)}</div></article>`;
+  return `<article class="index-card"><div class="row"><div><span class="flag">${escapeHTML(item.market)}</span><h3>${escapeHTML(item.name)}</h3><small>${escapeHTML(item.localName)}</small></div><strong>${Number(item.price).toLocaleString()}</strong></div><div class="row chart"><span class="${item.change>=0?'gain':'loss'}">${item.change>=0?'+':''}${Number(item.changePercent).toFixed(2)}%</span>${spark(item.points,item.change>=0,item.sparkImage)}</div></article>`;
 }
 
 function stock(item){
