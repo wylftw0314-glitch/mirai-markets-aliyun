@@ -111,7 +111,7 @@ function peRatio(value){
 function sessionLabel(value){return {pre:'盘前',regular:'盘中',after:'盘后',closed:'休市'}[value]||''}
 
 function spark(points,positive,imageUrl){
-  if(imageUrl)return `<img class="spark spark-image" src="${escapeHTML(imageUrl)}" alt="官方当日分时走势" loading="lazy" referrerpolicy="no-referrer">`;
+  if(imageUrl)return `<span class="spark spark-image ${positive?'up':'down'}" style="--spark-image:url('${escapeHTML(imageUrl)}')" role="img" aria-label="官方当日分时走势"></span>`;
   if(!points?.length||points.length<2)return '<span class="spark-empty">等待当日分时</span>';
   const min=Math.min(...points),max=Math.max(...points),range=max-min||1;
   const path=points.map((point,index)=>`${index?'L':'M'} ${(index/(points.length-1))*180} ${48-((point-min)/range)*42}`).join(' ');
