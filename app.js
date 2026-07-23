@@ -10,10 +10,12 @@ function readJSON(key,fallback){
   catch(error){return fallback}
 }
 function readSectorLimit(){const saved=localStorage.getItem('mirai-sector-limit');return saved===null?60:[0,30,60,100,200].includes(Number(saved))?Number(saved):60}
+const initialMarketCache=readJSON('mirai-market-cache',{items:[],updatedAt:null});
+const initialSectorCache=readJSON('mirai-sector-cache',{});
 
 const state={
-  items:[],market:'ALL',
-  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,flowInitialized:false,lastFlowAlert:null,flowDate:null,flowViewDate:null,flowDates:[],flowChartData:null,flowSeries:{speed:true,sh:true,sz:true,cyb:true,star50:true},flowXZoom:1,flowYZoom:1,flowYOffset:0,sectors:[],sectorType:'industry',sectorSort:'heat',sectorQuery:'',sectorLimit:readSectorLimit(),sectorFavorites:readJSON('mirai-sector-favorites',[]),activeSector:null,sectorDate:null,sectorInterval:1,sectorDetailData:null,sectorSeries:{sector:true},
+  items:Array.isArray(initialMarketCache.items)?initialMarketCache.items:[],market:'ALL',marketCacheUpdatedAt:initialMarketCache.updatedAt,
+  chinaEtfs:[],activeEtf:null,activeDetail:null,detailDate:null,detailDates:[],detailInterval:1,flowInitialized:false,lastFlowAlert:null,flowDate:null,flowViewDate:null,flowDates:[],flowChartData:null,flowSeries:{speed:true,sh:true,sz:true,cyb:true,star50:true},flowXZoom:1,flowYZoom:1,flowYOffset:0,sectors:[],sectorCache:initialSectorCache,sectorLoadedType:null,sectorLoadingType:null,sectorRequestId:0,sectorType:'industry',sectorSort:'heat',sectorQuery:'',sectorLimit:readSectorLimit(),sectorFavorites:readJSON('mirai-sector-favorites',[]),activeSector:null,sectorDate:null,sectorInterval:1,sectorDetailData:null,sectorSeries:{sector:true},
   favorites:readJSON('mirai-favorites',[]),
   customStocks:readJSON('mirai-custom-stocks',[]),
   currency:localStorage.getItem('mirai-currency')||'LOCAL',
@@ -385,23 +387,23 @@ async function refreshQuotes(force=false){
   if(refreshing||(!force&&document.visibilityState==='hidden'))return;
   refreshing=true;
   const generation=++refreshGeneration;
-  $('#updated').textContent='正在更新…';
+  $('#updated').textContent=state.items.length?'后台更新中…':'正在获取行情…';$('#updated').classList.add('is-refreshing');
   try{
     const symbols=allSymbols();
     const results=await Promise.allSettled(symbols.map(symbol=>fetch('/api/quote?symbol='+encodeURIComponent(symbol),{headers:{Accept:'application/json'}}).then(async response=>{const data=await response.json();if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);return data.item})));
-    const items=results.filter(result=>result.status==='fulfilled').map(result=>result.value);
-    if(!items.length)throw Error(results.find(result=>result.status==='rejected')?.reason?.message||'接口未返回数据');
-    items.forEach(item=>{const custom=customForSymbol(item.symbol);if(custom?.name)item.name=custom.name;if(item.pe)item.pe=peRatio(item.pe);if(item.marketCap){item._marketCapRaw=item.marketCap;item.marketCap=marketCap(item.marketCap,item.currency)}});
-    state.items=items;
-    const failed=results.length-items.length,counts={KR:0,JP:0,US:0};items.forEach(item=>counts[item.market]=(counts[item.market]||0)+1);
-    $('#data-state').textContent=`韩国 ${counts.KR||0} · 日本 ${counts.JP||0} · 美国 ${counts.US||0}`+(failed?` · ${failed} 项失败`:'');
+    const fresh=results.filter(result=>result.status==='fulfilled').map(result=>result.value),previous=new Map(state.items.map(item=>[item.symbol,item]));
+    if(!fresh.length)throw Error(results.find(result=>result.status==='rejected')?.reason?.message||'接口未返回数据');
+    fresh.forEach(item=>{const custom=customForSymbol(item.symbol);if(custom?.name)item.name=custom.name;if(item.pe)item.pe=peRatio(item.pe);if(item.marketCap){item._marketCapRaw=item.marketCap;item.marketCap=marketCap(item.marketCap,item.currency)}previous.set(item.symbol,item)});
+    const items=symbols.map(symbol=>previous.get(symbol)).filter(Boolean);state.items=items;try{localStorage.setItem('mirai-market-cache',JSON.stringify({items:items,updatedAt:new Date().toISOString()}))}catch(error){}
+    const failed=results.length-fresh.length,counts={KR:0,JP:0,US:0};items.forEach(item=>counts[item.market]=(counts[item.market]||0)+1);
+    $('#data-state').textContent=`韩国 ${counts.KR||0} · 日本 ${counts.JP||0} · 美国 ${counts.US||0}`+(failed?` · ${failed} 项沿用缓存`:'');
     $('#updated').textContent='更新 '+new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     render();enrichIntraday(generation);
   }catch(error){
-    $('#data-state').textContent='接口错误：'+error.message;
-    $('#updated').textContent='更新失败，60秒后重试';
-    $('#sentiment').textContent='离线';
-  }finally{refreshing=false}
+    $('#data-state').textContent=state.items.length?'行情更新暂不可用 · 继续显示上次数据':'接口错误：'+error.message;
+    $('#updated').textContent=state.items.length?'后台更新失败，稍后重试':'更新失败，60秒后重试';
+    if(!state.items.length)$('#sentiment').textContent='离线';
+  }finally{refreshing=false;$('#updated').classList.remove('is-refreshing')}
 }
 
 function compactCny(value){const number=Number(value)||0,absolute=Math.abs(number);if(absolute>=1e8)return (number/1e8).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 亿元';if(absolute>=1e4)return (number/1e4).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 万元';return number.toLocaleString('zh-CN')+' 元'}
@@ -473,8 +475,10 @@ function renderSectors(){
 }
 
 async function loadSectors(type=state.sectorType){
-  state.sectorType=type;$$('[data-sector-type]').forEach(button=>button.classList.toggle('active',button.dataset.sectorType===type));$('#sector-updated').textContent='正在更新板块行情…';$('#sector-mosaic').innerHTML='<p class="sector-loading">正在获取板块行情…</p>';
-  try{const pages=await Promise.all([1,2,3,4,5].map(page=>requestJSON('/api/china-sectors?type='+encodeURIComponent(type)+'&page='+page,'A股板块'))),data=pages[0];state.sectors=pages.flatMap(page=>page.rows||[]);$('#sector-updated').textContent=`交易日 ${data.marketDate} · ${pages.every(page=>page.cached)?'缓存':'实时'} · ${new Date(data.updatedAt).toLocaleTimeString('zh-CN')}`;renderSectors()}catch(error){$('#sector-updated').textContent='板块行情暂不可用';$('#sector-mosaic').innerHTML=`<p class="sector-loading">${escapeHTML(error.message)}</p>`}
+  if(state.sectorLoadingType===type)return;state.sectorType=type;const requestId=++state.sectorRequestId,cached=state.sectorCache[type];$$('[data-sector-type]').forEach(button=>button.classList.toggle('active',button.dataset.sectorType===type));
+  if(state.sectorLoadedType!==type){state.sectors=Array.isArray(cached?.rows)?cached.rows:[];state.sectorLoadedType=type;if(state.sectors.length){renderSectors();$('#sector-updated').textContent=`缓存数据 · ${new Date(cached.updatedAt).toLocaleTimeString('zh-CN')}`}else $('#sector-mosaic').innerHTML='<p class="sector-loading">正在获取板块行情…</p>'}
+  state.sectorLoadingType=type;$('.sector-monitor').classList.add('is-updating');$('#sector-updated').textContent=state.sectors.length?'后台更新中 · 当前数据可继续使用':'正在获取板块行情…';
+  try{const pages=await Promise.all([1,2,3,4,5].map(page=>requestJSON('/api/china-sectors?type='+encodeURIComponent(type)+'&page='+page,'A股板块'))),data=pages[0],rows=pages.flatMap(page=>page.rows||[]);if(requestId!==state.sectorRequestId||type!==state.sectorType)return;state.sectors=rows;state.sectorLoadedType=type;state.sectorCache[type]={rows:rows,updatedAt:data.updatedAt,marketDate:data.marketDate};try{localStorage.setItem('mirai-sector-cache',JSON.stringify(state.sectorCache))}catch(error){}$('#sector-updated').textContent=`交易日 ${data.marketDate} · ${pages.every(page=>page.cached)?'缓存':'实时'} · ${new Date(data.updatedAt).toLocaleTimeString('zh-CN')}`;renderSectors()}catch(error){if(requestId===state.sectorRequestId&&type===state.sectorType){$('#sector-updated').textContent=state.sectors.length?'更新失败 · 继续显示上次数据':'板块行情暂不可用';if(!state.sectors.length)$('#sector-mosaic').innerHTML=`<p class="sector-loading">${escapeHTML(error.message)}</p>`}}finally{if(state.sectorLoadingType===type)state.sectorLoadingType=null;if(requestId===state.sectorRequestId)$('.sector-monitor').classList.remove('is-updating')}
 }
 
 function sectorLeaderChart(leaders){
@@ -544,6 +548,7 @@ flowChartElement.onpointerup=flowChartElement.onpointercancel=()=>{flowDrag=null
 if(localStorage.getItem('mirai-flow-notifications')==='on'){$('#flow-notification-toggle').textContent='系统通知已开启';$('#flow-notification-toggle').classList.add('active')}
 if(!window.isSecureContext||!('Notification'in window)){$('#flow-notification-toggle').textContent='当前连接仅页面提醒';$('#flow-notification-toggle').disabled=true}
 
+if(state.items.length){render();$('#updated').textContent=state.marketCacheUpdatedAt?'缓存 '+new Date(state.marketCacheUpdatedAt).toLocaleTimeString('zh-CN'):'显示上次数据'}
 refreshQuotes();
 loadChinaMonitor();
 loadChinaFlowSpeed();
