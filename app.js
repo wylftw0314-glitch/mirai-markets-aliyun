@@ -466,7 +466,7 @@ function renderSectors(){
 
 async function loadSectors(type=state.sectorType){
   state.sectorType=type;$$('[data-sector-type]').forEach(button=>button.classList.toggle('active',button.dataset.sectorType===type));$('#sector-updated').textContent='正在更新板块行情…';$('#sector-body').innerHTML='<tr><td colspan="9">正在获取板块行情…</td></tr>';
-  try{const data=await requestJSON('/api/china-sectors?type='+encodeURIComponent(type),'A股板块');state.sectors=data.rows||[];$('#sector-updated').textContent=`交易日 ${data.marketDate} · ${data.cached?'缓存':'实时'} · ${new Date(data.updatedAt).toLocaleTimeString('zh-CN')}`;renderSectors()}catch(error){$('#sector-updated').textContent='板块行情暂不可用';$('#sector-body').innerHTML=`<tr><td colspan="9">${escapeHTML(error.message)}</td></tr>`}
+  try{const pages=await Promise.all([1,2,3,4,5].map(page=>requestJSON('/api/china-sectors?type='+encodeURIComponent(type)+'&page='+page,'A股板块'))),data=pages[0];state.sectors=pages.flatMap(page=>page.rows||[]);$('#sector-updated').textContent=`交易日 ${data.marketDate} · ${pages.every(page=>page.cached)?'缓存':'实时'} · ${new Date(data.updatedAt).toLocaleTimeString('zh-CN')}`;renderSectors()}catch(error){$('#sector-updated').textContent='板块行情暂不可用';$('#sector-body').innerHTML=`<tr><td colspan="9">${escapeHTML(error.message)}</td></tr>`}
 }
 
 function sectorLeaderChart(leaders){
